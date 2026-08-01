@@ -11,12 +11,10 @@ from PIL import Image, ImageOps
 # =========================================================
 
 st.set_page_config(
-    page_title="辰曦 AI 蝦皮半自動化2.5 優化版｜"
+    page_title="蝦皮AI半自動化2.5 優化版｜",
+    page_icon="🛒",
     layout="wide",
 )
-
-st.title("辰曦 AI 蝦皮半自動化 PRO｜即夢 AI 2.5")
-
 st.caption(
     "即夢 AI 2.5 完整優化版｜商品辨識・AI 選品・蝦皮文案・TikTok 文案・"
     "即夢 2.5 生圖・即夢 2.5 影片・分潤合規檢查"
