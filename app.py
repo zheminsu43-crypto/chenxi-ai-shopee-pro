@@ -11,7 +11,7 @@ from PIL import Image, ImageOps
 # =========================================================
 
 st.set_page_config(
-    page_title="蝦皮AI半自動化2.5 優化版｜",
+    page_title="AI 蝦皮半自動化2.5 優化版｜",
     page_icon="🛒",
     layout="wide",
 )
