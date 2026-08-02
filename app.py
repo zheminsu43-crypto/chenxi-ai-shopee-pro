@@ -3347,3 +3347,52 @@ st.caption(
     "一鍵工作流｜"
     "正式發布前必須人工確認。"
 )
+# =========================================================
+# 🎬 影片中心
+# =========================================================
+
+st.divider()
+
+st.subheader("🎬 8｜AI 影片中心")
+
+st.info(
+    "目前版本由 Gemini 產生即夢 2.5 影片 Prompt。"
+    "你可以將 Prompt 貼到即夢生成影片後，"
+    "把 MP4 上傳回這裡預覽。"
+)
+
+video_file = st.file_uploader(
+    "📤 上傳即夢 2.5 產出的影片",
+    type=["mp4", "mov", "webm"],
+    accept_multiple_files=False,
+    key="jimeng_video_uploader",
+)
+
+if video_file is not None:
+
+    video_bytes = video_file.getvalue()
+
+    if video_bytes:
+
+        st.success(
+            f"✅ 影片已上傳：{video_file.name}"
+        )
+
+        st.video(
+            video_bytes
+        )
+
+        st.download_button(
+            "⬇️ 下載影片",
+            data=video_bytes,
+            file_name=video_file.name,
+            mime="video/mp4",
+            use_container_width=True,
+            key="download_uploaded_video",
+        )
+
+    else:
+
+        st.error(
+            "❌ 影片檔案是空的。"
+        )
