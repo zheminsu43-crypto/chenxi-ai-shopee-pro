@@ -1,5 +1,6 @@
 import hashlib
-from datetime import datetime, date
+import secrets
+from datetime import datetime, date, timedelta
 
 import streamlit as st
 from google import genai
@@ -7,92 +8,376 @@ from PIL import Image, ImageOps
 
 
 # =========================================================
-# AI 蝦皮半自動化 2.5 優化版｜會員登入版
+# AI 蝦皮半自動化 2.5 PRO
+# 會員註冊｜會員登入｜會員期限｜管理員｜AI 商品分析
 # =========================================================
 
 st.set_page_config(
-    page_title="AI 蝦皮半自動化2.5 優化版｜",
+    page_title="AI 蝦皮半自動化 2.5 PRO",
     page_icon="🛒",
     layout="wide",
 )
 
 
 # =========================================================
-# 🔐 會員系統
+# 系統設定
+# =========================================================
+
+MODEL_CANDIDATES = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+]
+
+MAX_IMAGE_SIZE = 1600
+
+DEFAULT_MEMBER_DAYS = 30
+
+
+# =========================================================
+# 🔐 密碼工具
 # =========================================================
 
 def hash_password(password):
-    """SHA-256 密碼雜湊"""
-    return hashlib.sha256(
-        password.encode("utf-8")
+    """
+    使用 SHA-256 + 隨機 salt
+    """
+
+    salt = secrets.token_hex(16)
+
+    password_hash = hashlib.sha256(
+        (salt + password).encode("utf-8")
     ).hexdigest()
 
+    return f"{salt}${password_hash}"
 
-def get_members():
-    """從 Streamlit Secrets 讀取會員資料"""
+
+def verify_password(password, saved_value):
+    """
+    驗證 salt$password_hash
+    """
+
     try:
-        return st.secrets["members"]
+
+        salt, saved_hash = saved_value.split("$", 1)
+
+        input_hash = hashlib.sha256(
+            (salt + password).encode("utf-8")
+        ).hexdigest()
+
+        return secrets.compare_digest(
+            input_hash,
+            saved_hash,
+        )
+
     except Exception:
-        return {}
+
+        return False
 
 
-def check_login(username, password):
-    """驗證會員帳號、密碼、狀態、到期日"""
+# =========================================================
+# Supabase 設定
+# =========================================================
 
-    members = get_members()
+def get_supabase_config():
 
-    if username not in members:
-        return False, "invalid"
+    try:
 
-    member = members[username]
+        url = str(
+            st.secrets["SUPABASE_URL"]
+        ).strip()
 
-    # -----------------------------------------------------
-    # 會員狀態
-    # -----------------------------------------------------
+        key = str(
+            st.secrets["SUPABASE_ANON_KEY"]
+        ).strip()
 
-    status = str(
-        member.get("status", "active")
-    ).strip().lower()
+        if not url or not key:
 
-    if status != "active":
-        return False, "disabled"
+            return None, None
 
-    # -----------------------------------------------------
-    # 密碼驗證
-    # -----------------------------------------------------
+        return url.rstrip("/"), key
 
-    saved_hash = str(
-        member.get("password_hash", "")
-    ).strip()
+    except Exception:
 
-    saved_password = str(
-        member.get("password", "")
+        return None, None
+
+
+# =========================================================
+# Supabase REST
+# =========================================================
+
+def supabase_request(
+    method,
+    table,
+    params=None,
+    json_data=None,
+    headers_extra=None,
+):
+
+    import requests
+
+    url, key = get_supabase_config()
+
+    if not url or not key:
+
+        raise RuntimeError(
+            "尚未設定 SUPABASE_URL 或 SUPABASE_ANON_KEY。"
+        )
+
+    headers = {
+
+        "apikey": key,
+
+        "Authorization": f"Bearer {key}",
+
+        "Content-Type": "application/json",
+
+    }
+
+    if headers_extra:
+
+        headers.update(
+            headers_extra
+        )
+
+    response = requests.request(
+
+        method=method,
+
+        url=f"{url}/rest/v1/{table}",
+
+        params=params,
+
+        json=json_data,
+
+        headers=headers,
+
+        timeout=20,
+
     )
 
-    if saved_hash:
+    if not response.ok:
 
-        input_hash = hash_password(password)
+        raise RuntimeError(
+            f"Supabase 錯誤 {response.status_code}: "
+            f"{response.text}"
+        )
 
-        if input_hash != saved_hash:
-            return False, "invalid"
+    if not response.text:
 
-    elif saved_password:
+        return []
 
-        # 初期測試可以直接使用 password
-        if password != saved_password:
-            return False, "invalid"
+    try:
 
-    else:
+        return response.json()
+
+    except Exception:
+
+        return []
+
+
+# =========================================================
+# 會員資料庫
+# =========================================================
+
+def find_member(username):
+
+    username = username.strip().lower()
+
+    rows = supabase_request(
+
+        "GET",
+
+        "members",
+
+        params={
+            "username": f"eq.{username}",
+            "select": "*",
+            "limit": "1",
+        },
+
+    )
+
+    if rows:
+
+        return rows[0]
+
+    return None
+
+
+def find_member_by_id(member_id):
+
+    rows = supabase_request(
+
+        "GET",
+
+        "members",
+
+        params={
+            "id": f"eq.{member_id}",
+            "select": "*",
+            "limit": "1",
+        },
+
+    )
+
+    if rows:
+
+        return rows[0]
+
+    return None
+
+
+def create_member(
+    username,
+    password,
+    name,
+    email,
+):
+
+    username = username.strip().lower()
+
+    if find_member(username):
+
+        return False, "帳號已存在。"
+
+    password_hash = hash_password(
+        password
+    )
+
+    expires = (
+        date.today()
+        + timedelta(
+            days=DEFAULT_MEMBER_DAYS
+        )
+    ).isoformat()
+
+    data = {
+
+        "username": username,
+
+        "password_hash": password_hash,
+
+        "name": name.strip(),
+
+        "email": email.strip(),
+
+        "role": "member",
+
+        "status": "active",
+
+        "expires": expires,
+
+    }
+
+    rows = supabase_request(
+
+        "POST",
+
+        "members",
+
+        json_data=data,
+
+        headers_extra={
+            "Prefer": "return=representation"
+        },
+
+    )
+
+    if rows:
+
+        return True, rows[0]
+
+    return False, "會員建立失敗。"
+
+
+def update_member(
+    member_id,
+    updates,
+):
+
+    return supabase_request(
+
+        "PATCH",
+
+        "members",
+
+        params={
+            "id": f"eq.{member_id}"
+        },
+
+        json_data=updates,
+
+        headers_extra={
+            "Prefer": "return=representation"
+        },
+
+    )
+
+
+def get_all_members():
+
+    return supabase_request(
+
+        "GET",
+
+        "members",
+
+        params={
+            "select": "*",
+            "order": "created_at.desc",
+        },
+
+    )
+
+
+# =========================================================
+# 登入驗證
+# =========================================================
+
+def check_login(
+    username,
+    password,
+):
+
+    member = find_member(
+        username
+    )
+
+    if not member:
 
         return False, "invalid"
 
-    # -----------------------------------------------------
-    # 到期日
-    # -----------------------------------------------------
+    status = str(
+        member.get(
+            "status",
+            "active",
+        )
+    ).lower()
+
+    if status != "active":
+
+        return False, "disabled"
+
+    saved_hash = str(
+        member.get(
+            "password_hash",
+            "",
+        )
+    )
+
+    if not verify_password(
+        password,
+        saved_hash,
+    ):
+
+        return False, "invalid"
 
     expires_text = str(
-        member.get("expires", "")
-    ).strip()
+        member.get(
+            "expires",
+            "",
+        )
+    )
 
     try:
 
@@ -112,146 +397,392 @@ def check_login(username, password):
 
 
 # =========================================================
-# 🔐 登入頁
-# =========================================================
-
-def login_page():
-
-    st.markdown(
-        """
-        <style>
-        .login-box {
-            max-width: 520px;
-            margin: 70px auto 20px auto;
-            padding: 20px;
-        }
-
-        .login-title {
-            text-align: center;
-            font-size: 30px;
-            font-weight: bold;
-        }
-
-        .login-subtitle {
-            text-align: center;
-            margin-bottom: 25px;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        '<div class="login-box">',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        '<div class="login-title">🔐 會員登入</div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        '<div class="login-subtitle">'
-        'AI 蝦皮半自動化 2.5 優化版'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    username = st.text_input(
-        "會員帳號",
-        placeholder="請輸入會員帳號",
-    )
-
-    password = st.text_input(
-        "會員密碼",
-        type="password",
-        placeholder="請輸入會員密碼",
-    )
-
-    login_button = st.button(
-        "🚀 登入 AI 系統",
-        type="primary",
-        use_container_width=True,
-    )
-
-    if login_button:
-
-        if not username or not password:
-
-            st.error(
-                "請輸入會員帳號與密碼。"
-            )
-
-        else:
-
-            success, result = check_login(
-                username.strip(),
-                password,
-            )
-
-            if success:
-
-                st.session_state.logged_in = True
-                st.session_state.username = (
-                    username.strip()
-                )
-                st.session_state.member = result
-
-                st.rerun()
-
-            elif result == "expired":
-
-                st.error(
-                    "⛔ 會員資格已到期，請聯絡管理員續期。"
-                )
-
-            elif result == "disabled":
-
-                st.error(
-                    "⛔ 此會員帳號目前已停權。"
-                )
-
-            elif result == "invalid_date":
-
-                st.error(
-                    "⛔ 會員到期日設定錯誤，請聯絡管理員。"
-                )
-
-            else:
-
-                st.error(
-                    "❌ 會員帳號或密碼錯誤。"
-                )
-
-    st.markdown(
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-
-# =========================================================
-# 初始化 Session
+# Session 初始化
 # =========================================================
 
 if "logged_in" not in st.session_state:
 
     st.session_state.logged_in = False
 
+if "page" not in st.session_state:
+
+    st.session_state.page = "login"
+
 
 # =========================================================
-# 未登入 → 只顯示登入頁
+# 登出
+# =========================================================
+
+def logout():
+
+    st.session_state.logged_in = False
+
+    st.session_state.pop(
+        "username",
+        None,
+    )
+
+    st.session_state.pop(
+        "member",
+        None,
+    )
+
+    st.session_state.page = "login"
+
+    st.rerun()
+
+
+# =========================================================
+# CSS
+# =========================================================
+
+def inject_css():
+
+    st.markdown(
+        """
+        <style>
+
+        .main-title {
+            text-align:center;
+            font-size:42px;
+            font-weight:800;
+            margin-top:20px;
+            margin-bottom:10px;
+        }
+
+        .main-subtitle {
+            text-align:center;
+            font-size:17px;
+            opacity:0.75;
+            margin-bottom:30px;
+        }
+
+        .member-card {
+            padding:18px;
+            border-radius:16px;
+            border:1px solid rgba(128,128,128,.25);
+            margin-bottom:15px;
+        }
+
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+inject_css()
+
+
+# =========================================================
+# 🔐 登入頁
+# =========================================================
+
+def login_page():
+
+    st.markdown(
+        '<div class="main-title">🛒 AI 蝦皮半自動化 2.5 PRO</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="main-subtitle">'
+        '會員登入｜AI 商品分析｜即夢 AI 2.5 Prompt｜蝦皮｜TikTok'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    left, center, right = st.columns(
+        [1, 2, 1]
+    )
+
+    with center:
+
+        st.subheader(
+            "🔐 會員登入"
+        )
+
+        username = st.text_input(
+            "會員帳號",
+            placeholder="輸入會員帳號",
+            key="login_username",
+        )
+
+        password = st.text_input(
+            "會員密碼",
+            type="password",
+            placeholder="輸入會員密碼",
+            key="login_password",
+        )
+
+        login_button = st.button(
+            "🚀 登入系統",
+            type="primary",
+            use_container_width=True,
+        )
+
+        if login_button:
+
+            if not username or not password:
+
+                st.error(
+                    "請輸入會員帳號與密碼。"
+                )
+
+            else:
+
+                try:
+
+                    success, result = check_login(
+                        username,
+                        password,
+                    )
+
+                    if success:
+
+                        st.session_state.logged_in = True
+
+                        st.session_state.username = (
+                            username.strip().lower()
+                        )
+
+                        st.session_state.member = result
+
+                        st.session_state.page = "main"
+
+                        st.rerun()
+
+                    elif result == "expired":
+
+                        st.error(
+                            "⛔ 會員資格已到期，請聯絡管理員續期。"
+                        )
+
+                    elif result == "disabled":
+
+                        st.error(
+                            "⛔ 此會員帳號目前已停權。"
+                        )
+
+                    elif result == "invalid_date":
+
+                        st.error(
+                            "⛔ 會員到期日資料錯誤。"
+                        )
+
+                    else:
+
+                        st.error(
+                            "❌ 帳號或密碼錯誤。"
+                        )
+
+                except Exception as error:
+
+                    st.error(
+                        "會員系統連線失敗。"
+                    )
+
+                    st.code(
+                        str(error)
+                    )
+
+        st.divider()
+
+        if st.button(
+            "📝 還沒有帳號？註冊會員",
+            use_container_width=True,
+        ):
+
+            st.session_state.page = "register"
+
+            st.rerun()
+
+
+# =========================================================
+# 📝 註冊頁
+# =========================================================
+
+def register_page():
+
+    st.markdown(
+        '<div class="main-title">📝 會員註冊</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="main-subtitle">'
+        '建立您的 AI 蝦皮半自動化會員帳號'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    left, center, right = st.columns(
+        [1, 2, 1]
+    )
+
+    with center:
+
+        st.subheader(
+            "👤 建立會員帳號"
+        )
+
+        name = st.text_input(
+            "姓名 / 暱稱",
+            placeholder="例如：王小明",
+        )
+
+        email = st.text_input(
+            "Email",
+            placeholder="例如：example@gmail.com",
+        )
+
+        username = st.text_input(
+            "設定會員帳號",
+            placeholder="3～30 個英數字或底線",
+        )
+
+        password = st.text_input(
+            "設定會員密碼",
+            type="password",
+            placeholder="至少 6 個字元",
+        )
+
+        password_confirm = st.text_input(
+            "再次輸入密碼",
+            type="password",
+        )
+
+        register_button = st.button(
+            "🚀 建立會員帳號",
+            type="primary",
+            use_container_width=True,
+        )
+
+        if register_button:
+
+            username_clean = (
+                username.strip().lower()
+            )
+
+            if not name.strip():
+
+                st.error(
+                    "請輸入姓名或暱稱。"
+                )
+
+            elif "@" not in email:
+
+                st.error(
+                    "請輸入正確 Email。"
+                )
+
+            elif (
+                len(username_clean) < 3
+                or len(username_clean) > 30
+            ):
+
+                st.error(
+                    "會員帳號長度需要 3～30 個字元。"
+                )
+
+            elif not username_clean.replace(
+                "_",
+                "",
+            ).isalnum():
+
+                st.error(
+                    "帳號只能使用英文字母、數字與底線。"
+                )
+
+            elif len(password) < 6:
+
+                st.error(
+                    "密碼至少需要 6 個字元。"
+                )
+
+            elif password != password_confirm:
+
+                st.error(
+                    "兩次輸入的密碼不一致。"
+                )
+
+            else:
+
+                try:
+
+                    success, result = create_member(
+
+                        username=username_clean,
+
+                        password=password,
+
+                        name=name,
+
+                        email=email,
+
+                    )
+
+                    if success:
+
+                        st.success(
+                            "🎉 會員帳號建立成功！"
+                        )
+
+                        st.info(
+                            "您的會員資格預設為 30 天，"
+                            "現在可以直接登入。"
+                        )
+
+                        st.session_state.page = "login"
+
+                        st.rerun()
+
+                    else:
+
+                        st.error(
+                            str(result)
+                        )
+
+                except Exception as error:
+
+                    st.error(
+                        "註冊失敗，請檢查會員資料庫設定。"
+                    )
+
+                    st.code(
+                        str(error)
+                    )
+
+        st.divider()
+
+        if st.button(
+            "⬅️ 返回登入",
+            use_container_width=True,
+        ):
+
+            st.session_state.page = "login"
+
+            st.rerun()
+
+
+# =========================================================
+# 尚未登入
 # =========================================================
 
 if not st.session_state.logged_in:
 
-    login_page()
+    if st.session_state.page == "register":
+
+        register_page()
+
+    else:
+
+        login_page()
 
     st.stop()
 
 
 # =========================================================
-# 取得目前會員資料
+# 目前會員
 # =========================================================
 
 current_username = st.session_state.get(
@@ -264,10 +795,46 @@ current_member = st.session_state.get(
     {},
 )
 
+
+# =========================================================
+# 重新取得最新會員資料
+# =========================================================
+
+try:
+
+    latest_member = find_member(
+        current_username
+    )
+
+    if latest_member:
+
+        current_member = latest_member
+
+        st.session_state.member = (
+            latest_member
+        )
+
+except Exception:
+
+    pass
+
+
+member_id = current_member.get(
+    "id",
+    "",
+)
+
 member_name = str(
     current_member.get(
         "name",
         current_username,
+    )
+)
+
+member_email = str(
+    current_member.get(
+        "email",
+        "",
     )
 )
 
@@ -294,7 +861,7 @@ member_expires = str(
 
 
 # =========================================================
-# 計算會員剩餘天數
+# 會員期限
 # =========================================================
 
 try:
@@ -309,36 +876,41 @@ try:
 
 except Exception:
 
-    remaining_days = 0
+    remaining_days = -999
 
 
-# =========================================================
-# 再次檢查會員是否已到期
-# =========================================================
+if (
+    member_status.lower()
+    != "active"
+):
+
+    logout()
+
+    st.stop()
+
 
 if remaining_days < 0:
 
-    st.session_state.logged_in = False
-
-    st.session_state.pop(
-        "username",
-        None,
-    )
-
-    st.session_state.pop(
-        "member",
-        None,
-    )
-
     st.error(
-        "⛔ 會員資格已到期，請重新聯絡管理員。"
+        "⛔ 會員資格已到期。"
     )
+
+    st.info(
+        "請聯絡管理員續期後再使用系統。"
+    )
+
+    if st.button(
+        "🚪 返回登入",
+        type="primary",
+    ):
+
+        logout()
 
     st.stop()
 
 
 # =========================================================
-# 👤 側邊欄會員中心
+# 👤 側邊欄
 # =========================================================
 
 with st.sidebar:
@@ -355,12 +927,14 @@ with st.sidebar:
         f"帳號：**{current_username}**"
     )
 
-    st.write(
-        f"會員等級：**{member_role}**"
-    )
+    if member_email:
+
+        st.write(
+            f"Email：**{member_email}**"
+        )
 
     st.write(
-        f"會員狀態：**{member_status}**"
+        f"等級：**{member_role}**"
     )
 
     st.write(
@@ -370,13 +944,19 @@ with st.sidebar:
     if remaining_days == 0:
 
         st.warning(
-            "⚠️ 今天是會員最後使用日。"
+            "⚠️ 今天為最後使用日"
         )
 
-    elif remaining_days > 0:
+    elif remaining_days <= 7:
 
-        st.write(
-            f"⏳ 剩餘：**{remaining_days} 天**"
+        st.warning(
+            f"⚠️ 剩餘 {remaining_days} 天"
+        )
+
+    else:
+
+        st.info(
+            f"⏳ 剩餘 {remaining_days} 天"
         )
 
     st.divider()
@@ -386,90 +966,353 @@ with st.sidebar:
         use_container_width=True,
     ):
 
-        st.session_state.logged_in = False
-
-        st.session_state.pop(
-            "username",
-            None,
-        )
-
-        st.session_state.pop(
-            "member",
-            None,
-        )
-
-        st.rerun()
+        logout()
 
 
 # =========================================================
-# 👑 管理員資訊
+# 👑 管理員中心
+# =========================================================
+
+def admin_panel():
+
+    st.header(
+        "👑 管理員中心"
+    )
+
+    st.caption(
+        "會員註冊後會自動進入會員資料庫。"
+    )
+
+    try:
+
+        members = get_all_members()
+
+    except Exception as error:
+
+        st.error(
+            "會員資料庫讀取失敗。"
+        )
+
+        st.code(
+            str(error)
+        )
+
+        return
+
+    if not members:
+
+        st.info(
+            "目前沒有會員資料。"
+        )
+
+        return
+
+    st.write(
+        f"目前會員數：**{len(members)}**"
+    )
+
+    st.divider()
+
+    for member in members:
+
+        mid = member.get(
+            "id",
+            "",
+        )
+
+        username = member.get(
+            "username",
+            "",
+        )
+
+        name = member.get(
+            "name",
+            "",
+        )
+
+        email = member.get(
+            "email",
+            "",
+        )
+
+        role = member.get(
+            "role",
+            "member",
+        )
+
+        status = member.get(
+            "status",
+            "active",
+        )
+
+        expires = member.get(
+            "expires",
+            "",
+        )
+
+        with st.expander(
+            f"👤 {name}｜{username}",
+            expanded=False,
+        ):
+
+            c1, c2 = st.columns(2)
+
+            with c1:
+
+                st.write(
+                    f"帳號：**{username}**"
+                )
+
+                st.write(
+                    f"姓名：**{name}**"
+                )
+
+                st.write(
+                    f"Email：**{email}**"
+                )
+
+            with c2:
+
+                st.write(
+                    f"身份：**{role}**"
+                )
+
+                st.write(
+                    f"狀態：**{status}**"
+                )
+
+                st.write(
+                    f"到期：**{expires}**"
+                )
+
+            st.divider()
+
+            new_status = st.selectbox(
+
+                "會員狀態",
+
+                [
+                    "active",
+                    "disabled",
+                ],
+
+                index=(
+                    0
+                    if status == "active"
+                    else 1
+                ),
+
+                key=f"status_{mid}",
+
+            )
+
+            new_role = st.selectbox(
+
+                "會員等級",
+
+                [
+                    "member",
+                    "vip",
+                    "admin",
+                ],
+
+                index=(
+                    [
+                        "member",
+                        "vip",
+                        "admin",
+                    ].index(role)
+                    if role
+                    in [
+                        "member",
+                        "vip",
+                        "admin",
+                    ]
+                    else 0
+                ),
+
+                key=f"role_{mid}",
+
+            )
+
+            new_expire = st.date_input(
+
+                "會員到期日",
+
+                value=(
+                    date.fromisoformat(
+                        expires
+                    )
+                    if expires
+                    else date.today()
+                ),
+
+                key=f"expire_{mid}",
+
+            )
+
+            b1, b2, b3 = st.columns(3)
+
+            with b1:
+
+                if st.button(
+                    "💾 儲存會員",
+                    key=f"save_{mid}",
+                    use_container_width=True,
+                ):
+
+                    try:
+
+                        update_member(
+
+                            mid,
+
+                            {
+                                "status": new_status,
+                                "role": new_role,
+                                "expires": new_expire.isoformat(),
+                            },
+
+                        )
+
+                        st.success(
+                            "會員資料已更新。"
+                        )
+
+                        st.rerun()
+
+                    except Exception as error:
+
+                        st.error(
+                            "更新失敗。"
+                        )
+
+                        st.code(
+                            str(error)
+                        )
+
+            with b2:
+
+                if st.button(
+                    "➕ 延長 30 天",
+                    key=f"extend_{mid}",
+                    use_container_width=True,
+                ):
+
+                    try:
+
+                        current_expire = date.fromisoformat(
+                            expires
+                        )
+
+                    except Exception:
+
+                        current_expire = date.today()
+
+                    if current_expire < date.today():
+
+                        current_expire = date.today()
+
+                    new_date = (
+                        current_expire
+                        + timedelta(days=30)
+                    )
+
+                    update_member(
+
+                        mid,
+
+                        {
+                            "expires": new_date.isoformat(),
+                            "status": "active",
+                        },
+
+                    )
+
+                    st.success(
+                        f"已延長至 {new_date.isoformat()}"
+                    )
+
+                    st.rerun()
+
+            with b3:
+
+                if (
+                    username
+                    != current_username
+                ):
+
+                    if st.button(
+                        "⛔ 停權",
+                        key=f"disable_{mid}",
+                        use_container_width=True,
+                    ):
+
+                        update_member(
+
+                            mid,
+
+                            {
+                                "status": "disabled"
+                            },
+
+                        )
+
+                        st.warning(
+                            "會員已停權。"
+                        )
+
+                        st.rerun()
+
+
+# =========================================================
+# 主系統
+# =========================================================
+
+st.markdown(
+    '<div class="main-title">'
+    '🛒 AI 蝦皮半自動化 2.5 PRO'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<div class="main-subtitle">'
+    '商品辨識｜AI 選品｜蝦皮文案｜TikTok｜即夢 AI 2.5｜分潤合規'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+
+# =========================================================
+# 管理員入口
 # =========================================================
 
 if member_role.lower() == "admin":
 
-    with st.sidebar.expander(
+    with st.expander(
         "👑 管理員中心",
         expanded=False,
     ):
 
-        st.success(
-            "目前登入身份：管理員"
-        )
+        admin_panel()
 
-        st.write(
-            "會員資料來源：Streamlit Secrets"
-        )
-
-        st.info(
-            "目前版本的會員資料需要在 Secrets 中修改。"
-        )
+    st.divider()
 
 
 # =========================================================
-# 主標題
-# =========================================================
-
-st.title(
-    "AI 蝦皮半自動化2.5 優化版｜"
-)
-
-st.caption(
-    "即夢 AI 2.5 完整優化版｜"
-    "商品辨識・AI 選品・蝦皮文案・TikTok 文案・"
-    "即夢 2.5 生圖・即夢 2.5 影片・分潤合規檢查"
-)
-
-
-# =========================================================
-# 系統設定
-# =========================================================
-
-MODEL_CANDIDATES = [
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-3.5-flash",
-]
-
-MAX_IMAGE_SIZE = 1600
-
-
-# =========================================================
-# Gemini API KEY
+# Gemini API
 # =========================================================
 
 def get_api_key():
 
     try:
 
-        api_key = str(
+        key = str(
             st.secrets["GEMINI_API_KEY"]
         ).strip()
 
-        if api_key:
-
-            return api_key
-
-        return None
+        return key or None
 
     except Exception:
 
@@ -477,7 +1320,7 @@ def get_api_key():
 
 
 # =========================================================
-# 商品圖片處理
+# 圖片處理
 # =========================================================
 
 def prepare_image(uploaded_file):
@@ -531,106 +1374,81 @@ def prepare_image(uploaded_file):
 # =========================================================
 
 JIMENG_25_CORE_RULES = """
-【即夢 AI 2.5 核心生成規則】
+【即夢 AI 2.5 商品一致性核心規則】
 
-你現在產生的是「即夢 AI 2.5」專用提示詞。
+1. 使用者上傳的商品圖片是唯一主要商品來源。
 
-一、商品原貌鎖定
-- 必須以使用者上傳圖片中的實際商品作為唯一商品來源。
-- 保持商品原本品牌、包裝、瓶身、盒身、形狀、比例、顏色、材質。
-- 保持原本標籤、印刷文字、Logo、圖案與包裝結構。
-- 不得重新設計品牌。
-- 不得重新設計包裝。
-- 不得擅自更改商品顏色。
-- 不得增加不存在的配件。
-- 不得增加不存在的贈品。
-- 不得生成第二個相同商品。
-- 不得把商品變成其他商品。
+2. 必須維持：
+- 商品原本品牌
+- 商品原本包裝
+- 商品原本形狀
+- 商品原本比例
+- 商品原本顏色
+- 商品原本材質
+- 原始 Logo
+- 原始標籤
+- 原始印刷文字
+- 原始包裝結構
 
-二、商品一致性
-- Product identity must remain consistent throughout the entire scene.
-- Keep the original product shape and proportions.
-- Keep the original packaging design.
-- Keep visible printed text and logo placement unchanged.
-- No duplicate products unless explicitly requested.
-- No product transformation.
-- No melting.
-- No deformation.
-- No flickering.
-- No floating packaging.
-- No sudden object replacement.
-- No warped label.
-- No drifting text.
-- No changing logo.
-- No changing bottle or box shape.
+3. 禁止：
+- 重新設計品牌
+- 重新設計包裝
+- 改變商品顏色
+- 改變瓶身或盒身
+- 改變 Logo
+- 改變文字
+- 商品變形
+- 商品融化
+- 商品閃爍
+- 商品漂移
+- 商品突然變成其他商品
+- 多出第二個商品
+- 商品消失
 
-三、人物限制
-- 預設不要人物。
-- 不要手部。
-- 不要主持人。
-- 不要代言人。
-- 不要模特兒。
-- 不要人物拿著商品。
-- 不要人物遮擋商品。
+4. 預設禁止：
+- 人物
+- 手
+- 主持人
+- 代言人
+- 模特兒
+- 人物拿商品
+- 人物遮擋商品
 
-四、畫面限制
-- 不要浮水印。
-- 不要錯誤價格。
-- 不要假贈品。
-- 不要錯誤品牌。
-- 不要虛構產品。
-- 不要多餘商品。
-- 不要錯誤文字。
-- 不要低品質模糊商品。
-- 不要過度反光導致包裝文字消失。
+5. 禁止：
+- 浮水印
+- 假價格
+- 假贈品
+- 假優惠
+- 假認證
+- 未確認規格
+- 未確認功效
+- 未確認成分
+- 未確認產地
 
-五、商業內容
-- 畫面必須以商品為視覺主體。
-- 商品必須清楚、完整、容易辨識。
-- 商品不可被背景或裝飾物搶走視覺焦點。
-- 使用高級商業產品攝影質感。
-- 適合電商、蝦皮、TikTok 商品行銷內容。
+6. 畫面：
+- 商品為唯一主要視覺焦點
+- 高級商業產品攝影
+- 清楚
+- 真實
+- 穩定
+- 適合電商
 
-六、圖片指令
-- 指令本體使用英文。
-- 如果畫面需要出現文字，文字內容使用繁體中文。
-- 不要在英文 prompt 中自行創造未確認的商品資訊。
-- 未確認資訊不得自行補完。
+7. 即夢 Prompt 本體使用英文。
 
-七、影片指令
-影片必須維持同一商品身份。
+8. 不得自行創造未確認商品資訊。
 
-Opening：
-商品完整出現並置中。
+9. 影片必須從開始到結束保持同一商品身份。
 
-Middle：
-慢速推近商品，展示包裝、材質與細節。
-
-Camera：
+10. 影片推薦：
 slow cinematic push-in,
-subtle orbit,
+subtle orbit movement,
 smooth camera movement,
-stable composition.
-
-Ending：
-商品回到置中構圖並穩定定格。
-
-整個影片：
-- 商品不可變形。
-- 商品不可變色。
-- 包裝不可改變。
-- Logo 不可改變。
-- 文字不可漂移。
-- 不可突然增加商品。
-- 不可突然減少商品。
-- 不可出現人物。
-- 不可出現手。
-- 不可出現浮水印。
+stable framing.
 """
 
 
 # =========================================================
-# 建立 AI Prompt
+# Prompt
 # =========================================================
 
 def build_prompt(
@@ -645,17 +1463,17 @@ def build_prompt(
     return f"""
 你現在是專業電商 AI 營運助手。
 
-你需要根據：
-1. 使用者上傳的商品圖片
-2. 使用者提供的商品資料
+請分析使用者上傳的商品圖片以及商品資料。
 
-進行商品辨識、選品分析、電商文案以及「即夢 AI 2.5」專用生圖／影片提示詞生成。
+所有一般說明使用繁體中文。
 
-請使用繁體中文回答。
-但是「即夢 AI 2.5 生圖指令」與「即夢 AI 2.5 影片指令」本體必須使用英文。
+但是：
+「即夢 AI 2.5 生圖 Prompt」
+「即夢 AI 2.5 影片 Prompt」
+必須使用英文。
 
 =========================================================
-【商品資料】
+商品資料
 =========================================================
 
 商品名稱：
@@ -690,52 +1508,71 @@ def build_prompt(
 
 
 =========================================================
-【AI 商品辨識保護】
+商品辨識保護
 =========================================================
 
-1. 僅能根據圖片與使用者提供資料判斷。
-2. 無法確認的資訊必須標示「待確認」。
-3. 不得自行虛構品牌。
-4. 不得自行虛構容量。
-5. 不得自行虛構產地。
-6. 不得自行虛構成分。
-7. 不得自行虛構功效。
-8. 不得自行虛構價格。
-9. 不得自行虛構贈品。
-10. 不得自行虛構認證。
-11. 不得自行虛構保存期限。
-12. 不得自行虛構規格。
-13. 若圖片中有多個商品主體，選擇最大、最清楚、
-    品牌辨識度最高的商品作為主要商品。
-14. 如果無法確認單瓶、整組、組合或隨機款，
-    必須標示「待人工確認」。
-15. 圖片中僅供展示的物品不得宣稱為贈品。
+只能根據：
+1. 商品圖片
+2. 使用者提供資料
+
+判斷商品。
+
+無法確認的資訊必須寫：
+
+「待確認」
+
+禁止自行虛構：
+
+- 品牌
+- 容量
+- 成分
+- 產地
+- 功效
+- 價格
+- 贈品
+- 認證
+- 規格
+- 保存期限
+- 折扣
+- 銷量
+
+如果圖片中有多個商品：
+
+選擇最大、最清楚、品牌辨識度最高的商品作為主要商品。
+
+如果無法確認是單品、組合或套裝：
+
+標示「待人工確認」。
 
 
 =========================================================
-【文案合規】
+文案合規
 =========================================================
 
-不得使用：
-第一、最強、最好、100%、保證有效、永久、無敵、
-醫療級、治療、根治、神效、速效等無法證明的誇大詞語。
+不要使用：
 
-不得：
-- 宣稱疾病治療
-- 宣稱醫療療效
+第一
+最強
+最好
+100%
+保證有效
+永久
+無敵
+神效
+速效
+治療
+根治
+醫療級
+
+禁止：
+
+- 疾病治療宣稱
+- 醫療療效宣稱
 - 虛構折扣
 - 虛構價格
 - 虛構贈品
 - 虛構認證
-- 虛構容量
-- 虛構產地
-- 虛構商品來源
-
-資訊不足時：
-使用安全、中性的描述。
-
-正式發布前：
-提醒人工確認價格、庫存、規格、商品資格與分潤資格。
+- 虛構規格
 
 
 =========================================================
@@ -744,43 +1581,44 @@ def build_prompt(
 
 
 =========================================================
-【輸出規則】
+輸出規則
 =========================================================
 
 只輸出使用者選擇的功能。
 
-如果使用者選擇「完整流程」，
-請完整輸出以下所有內容。
+如果選擇「完整流程」：
+
+完整輸出以下內容。
 
 
 =========================================================
 一、商品辨識
 =========================================================
 
-- 品牌
-- 商品名稱
-- 商品類型
-- 包裝與外觀特徵
-- 圖片可確認資訊
-- 待人工確認資訊
+品牌：
+商品名稱：
+商品類型：
+包裝與外觀：
+圖片可確認資訊：
+待人工確認資訊：
 
 
 =========================================================
 二、AI 選品分析
 =========================================================
 
-- 市場需求
-- 商品吸引力
-- 競爭程度
-- 內容製作難度
-- 合規風險
-- 推薦分數：0～100
-- 推薦等級：高潛力／可測試／暫不推薦
-- 評分依據
+市場需求：
+商品吸引力：
+競爭程度：
+內容製作難度：
+合規風險：
+推薦分數：0～100
+推薦等級：
+評分依據：
 
-如果缺少：
-月銷量、價格、成本、分潤資料，
-必須明確說明：
+如果缺少價格、成本、銷量、分潤：
+
+明確標示：
 「目前為暫定內容潛力評分。」
 
 
@@ -788,229 +1626,264 @@ def build_prompt(
 三、蝦皮上架文案
 =========================================================
 
-- 商品標題三組
-- 商品短描述
-- 完整商品描述
-- 商品特色
-- 使用方式
-- 保存方式
-- 注意事項
-- 搜尋關鍵字
-- 商品規格欄位
-- 待確認資料
+商品標題 1：
+商品標題 2：
+商品標題 3：
+
+短描述：
+
+完整商品描述：
+
+商品特色：
+
+使用方式：
+
+保存方式：
+
+注意事項：
+
+搜尋關鍵字：
+
+商品規格：
+
+待確認資料：
 
 
 =========================================================
 四、TikTok 文案
 =========================================================
 
-- 影片開場句
-- 15 秒口播稿
-- 30 秒口播稿
-- 貼文文案
-- Hashtag
-- 行動引導文案
+影片開場：
+
+15 秒口播：
+
+30 秒口播：
+
+TikTok 貼文：
+
+Hashtag：
+
+行動引導：
 
 
 =========================================================
-五、即夢 AI 2.5 生圖指令
+五、即夢 AI 2.5 生圖
 =========================================================
 
-【A｜1:1 蝦皮商品主圖】
+A｜1:1 蝦皮商品主圖
 
-輸出：
-- English Prompt
-- Negative Prompt
-
-要求：
-- square 1:1
-- premium commercial product photography
-- product centered
-- clean composition
-- product clearly visible
-- realistic materials
-- realistic lighting
-- original packaging preserved
-- original product identity preserved
-
-
-【B｜9:16 TikTok 商品海報】
-
-輸出：
-- English Prompt
-- Negative Prompt
-
-要求：
-- vertical 9:16
-- product centered
-- premium advertising composition
-- strong visual hierarchy
-- suitable for TikTok
-- original packaging preserved
-
-
-【C｜商品介紹圖】
-
-輸出：
-- English Prompt
-- Negative Prompt
-
-要求：
-- product-focused
-- clean premium background
-- close-up product details
-- material and packaging details visible
-- no person
-- no hand
-
-
-=========================================================
-六、即夢 AI 2.5 影片指令
-=========================================================
-
-產生一段：
-「9:16 直式商品展示影片」
-
-【Video Prompt】
-完整英文指令。
+English Prompt：
 
 必須包含：
 
+square 1:1,
+premium commercial product photography,
+product centered,
+clean composition,
+realistic materials,
+realistic lighting,
+original product identity preserved,
+original packaging preserved.
+
+Negative Prompt：
+
+
+B｜9:16 TikTok 商品海報
+
+English Prompt：
+
+必須包含：
+
+vertical 9:16,
+product centered,
+premium advertising composition,
+strong visual hierarchy,
+clean background,
+original packaging preserved,
+original product identity preserved.
+
+Negative Prompt：
+
+
+C｜商品介紹圖
+
+English Prompt：
+
+必須包含：
+
+product-focused,
+premium commercial photography,
+close-up product details,
+clean premium background,
+material details visible,
+packaging details visible,
+no person,
+no hand.
+
+Negative Prompt：
+
+
+=========================================================
+六、即夢 AI 2.5 影片
+=========================================================
+
+製作：
+
+9:16 直式商品展示影片。
+
+Video Prompt 必須是完整英文。
+
 Scene 1 — Opening
-- 商品完整出現
-- 商品置中
-- 商品清楚可見
+
+商品完整出現。
+商品置中。
+商品清楚可見。
 
 Scene 2 — Product Detail
-- 展示包裝
-- 展示材質
-- 展示商品細節
+
+展示包裝。
+展示材質。
+展示商品細節。
 
 Scene 3 — Camera Motion
-- slow cinematic push-in
-- subtle orbit movement
-- smooth camera movement
-- stable framing
+
+使用：
+
+slow cinematic push-in,
+subtle orbit movement,
+smooth camera movement,
+stable framing.
 
 Scene 4 — Ending
-- 商品重新置中
-- 穩定定格
-- 商品保持完整原貌
 
-【Negative Prompt】
+商品重新置中。
+穩定定格。
+商品保持原貌。
 
-- product deformation
-- product transformation
-- packaging redesign
-- logo change
-- text distortion
-- text drifting
-- duplicated product
-- extra product
-- missing product
-- color shift
-- shape change
-- melting
-- flickering
-- warped packaging
-- floating objects
-- human
-- hands
-- presenter
-- spokesperson
-- watermark
-- fake gift
-- fake price
+Negative Prompt：
+
+product deformation,
+product transformation,
+packaging redesign,
+logo change,
+text distortion,
+text drifting,
+duplicated product,
+extra product,
+missing product,
+color shift,
+shape change,
+melting,
+flickering,
+warped packaging,
+floating objects,
+human,
+hands,
+presenter,
+spokesperson,
+watermark,
+fake gift,
+fake price.
 
 
 =========================================================
 七、即夢 AI 2.5 爆款帶貨版本
 =========================================================
 
-另外產生一份「9:16 電商帶貨影片版本」。
+製作：
 
-必須包含：
+9:16 電商帶貨影片。
 
-- 0～3 秒：商品第一視覺
-- 3～7 秒：商品細節
-- 7～12 秒：商品特色展示
-- 12～15 秒：商品置中結尾
+時間：
 
-要求：
+0～3 秒：
+商品第一視覺。
 
-畫面必須保持高級、乾淨、商業化。
+3～7 秒：
+商品細節。
 
-不要人物。
-不要手。
-不要主持人。
-不要代言人。
+7～12 秒：
+商品特色。
 
-商品必須全程保持原貌。
+12～15 秒：
+商品置中結尾。
 
-不得自行加入未確認商品賣點。
+禁止人物。
+禁止手。
+禁止主持人。
+禁止代言人。
+
+不得自行加入未確認賣點。
 
 
 =========================================================
 八、蝦皮分潤合規檢查
 =========================================================
 
-- 商品與圖片是否一致
-- 影片與商品是否一致
-- 文案與商品是否一致
-- 綁定商品是否一致
-- 是否疑似禁止推廣商品
-- 是否可能無法取得分潤
-- 是否含療效宣稱
-- 是否含誇大宣稱
-- 是否存在規格誤判
-- 是否存在錯誤價格
-- 是否存在假贈品
-- 是否使用未確認資訊
+檢查：
+
+商品與圖片是否一致
+影片與商品是否一致
+文案與商品是否一致
+綁定商品是否一致
+是否疑似禁止推廣商品
+是否可能無法取得分潤
+是否含療效宣稱
+是否含誇大宣稱
+是否存在規格誤判
+是否存在錯誤價格
+是否存在假贈品
+是否使用未確認資訊
 
 最後判斷：
 
-「適合發布」
+適合發布
 或
-「修改後發布」
+修改後發布
 或
-「禁止發布」
+禁止發布
 
 並列出：
-「必須人工確認項目」。
+
+必須人工確認項目。
 
 
 =========================================================
 九、最終人工確認清單
 =========================================================
 
-- 可直接使用內容
-- 必須修改內容
-- 缺少商品資料
-- 發布前最後檢查事項
+可直接使用內容：
+
+必須修改內容：
+
+缺少商品資料：
+
+發布前最後檢查：
 
 
 =========================================================
-【最重要輸出要求】
+最重要
 =========================================================
 
-即夢 AI 2.5 Prompt 必須可以直接複製。
+即夢 AI Prompt 必須可以直接複製。
 
-不要在 Prompt 中加入：
+不要輸出：
+
 「你可以」
 「建議」
 「例如」
 「請自行修改」
 
-要直接生成完整指令。
+直接輸出完整 Prompt。
 
-不要把未確認的商品資訊當成事實。
+不要把未確認資訊當成事實。
 
 商品圖片中的原始商品永遠是主要參考來源。
 """
 
 
 # =========================================================
-# Gemini 分析
+# Gemini
 # =========================================================
 
 def analyze_with_gemini(
@@ -1030,11 +1903,14 @@ def analyze_with_gemini(
         try:
 
             response = client.models.generate_content(
+
                 model=model_name,
+
                 contents=[
                     prompt,
                     image,
                 ],
+
             )
 
             result = getattr(
@@ -1051,7 +1927,7 @@ def analyze_with_gemini(
                 )
 
             errors.append(
-                f"{model_name}：沒有回傳文字內容"
+                f"{model_name}：沒有回傳內容"
             )
 
         except Exception as error:
@@ -1061,30 +1937,35 @@ def analyze_with_gemini(
             )
 
     raise RuntimeError(
-        "所有備用模型均無法使用：\n\n"
+        "所有 Gemini 模型均無法使用：\n\n"
         + "\n\n".join(errors)
     )
 
 
 # =========================================================
-# 1｜商品圖片
+# 1 商品圖片
 # =========================================================
 
 st.subheader(
-    "1｜上傳商品圖片"
+    "1｜📷 上傳商品圖片"
 )
 
 uploaded_file = st.file_uploader(
+
     "請上傳商品圖片",
+
     type=[
         "jpg",
         "jpeg",
         "png",
         "webp",
     ],
+
 )
 
+
 prepared_image = None
+
 
 if uploaded_file is not None:
 
@@ -1095,15 +1976,19 @@ if uploaded_file is not None:
         )
 
         st.image(
+
             prepared_image,
+
             caption="已上傳商品圖片",
+
             use_container_width=True,
+
         )
 
     except Exception as error:
 
         st.error(
-            "圖片讀取失敗，請換一張 JPG、PNG 或 WEBP 圖片。"
+            "圖片讀取失敗。"
         )
 
         st.code(
@@ -1112,14 +1997,15 @@ if uploaded_file is not None:
 
 
 # =========================================================
-# 2｜商品資料
+# 2 商品資料
 # =========================================================
 
 st.subheader(
-    "2｜填寫商品資料"
+    "2｜📦 商品資料"
 )
 
 col1, col2 = st.columns(2)
+
 
 with col1:
 
@@ -1169,49 +2055,71 @@ with col2:
 
 
 # =========================================================
-# 3｜目標平台
+# 3 平台
 # =========================================================
 
 st.subheader(
-    "3｜選擇目標平台"
+    "3｜🎯 目標平台"
 )
 
 target_platform = st.radio(
+
     "目標平台",
+
     [
         "蝦皮",
         "TikTok",
         "蝦皮＋TikTok",
     ],
+
     horizontal=True,
+
 )
 
 
 # =========================================================
-# 4｜生成內容
+# 4 功能
 # =========================================================
 
 st.subheader(
-    "4｜選擇生成內容"
+    "4｜🤖 AI 功能"
 )
 
 generate_options = [
+
     "商品辨識",
+
     "AI 選品分析",
+
     "蝦皮上架文案",
+
     "TikTok 文案",
+
     "即夢 AI 2.5 生圖指令",
+
     "即夢 AI 2.5 影片指令",
+
     "即夢 AI 2.5 爆款帶貨影片",
+
     "分潤合規檢查",
+
     "完整流程",
+
 ]
 
+
 selected_items = st.multiselect(
-    "請選擇需要的功能",
+
+    "選擇需要的功能",
+
     options=generate_options,
-    default=["完整流程"],
+
+    default=[
+        "完整流程"
+    ],
+
 )
+
 
 if (
     "完整流程" in selected_items
@@ -1219,22 +2127,26 @@ if (
 ):
 
     st.info(
-        "已選擇「完整流程」，系統會產生全部內容。"
+        "已選擇完整流程，其他選項會自動包含。"
     )
 
 
 # =========================================================
-# 5｜啟動
+# 5 啟動
 # =========================================================
 
 st.subheader(
-    "5｜開始分析"
+    "5｜🚀 開始 AI 分析"
 )
 
 start_button = st.button(
+
     "🚀 啟動 AI 蝦皮半自動化 2.5",
+
     type="primary",
+
     use_container_width=True,
+
 )
 
 
@@ -1242,24 +2154,27 @@ if start_button:
 
     api_key = get_api_key()
 
+
     if prepared_image is None:
 
         st.error(
-            "請先上傳一張有效的商品圖片。"
+            "請先上傳商品圖片。"
         )
+
 
     elif not selected_items:
 
         st.error(
-            "請至少選擇一個生成內容。"
+            "請至少選擇一個 AI 功能。"
         )
+
 
     elif not api_key:
 
         st.error(
             "尚未設定 GEMINI_API_KEY。"
-            "請到 Manage app → Settings → Secrets 設定。"
         )
+
 
     else:
 
@@ -1282,7 +2197,9 @@ if start_button:
             "商品規格": product_spec,
 
             "目標平台": target_platform,
+
         }
+
 
         if "完整流程" in selected_items:
 
@@ -1294,58 +2211,72 @@ if start_button:
 
             effective_items = selected_items
 
+
         prompt = build_prompt(
+
             product_data,
+
             effective_items,
+
         )
+
 
         try:
 
             with st.spinner(
-                "AI 正在分析商品並生成即夢 AI 2.5 專用指令……"
+
+                "🤖 AI 正在辨識商品、分析選品並生成即夢 AI 2.5 指令……"
+
             ):
 
                 result, used_model = (
                     analyze_with_gemini(
+
                         api_key=api_key,
+
                         prompt=prompt,
+
                         image=prepared_image,
+
                     )
                 )
 
+
             st.success(
-                "分析完成｜即夢 AI 2.5 指令已生成"
+                "🎉 AI 分析完成！"
             )
+
 
             st.caption(
                 f"本次使用模型：{used_model}"
             )
 
-            # =================================================
-            # 結果
-            # =================================================
 
             st.subheader(
-                "6｜完整結果"
+                "6｜📊 AI 分析結果"
             )
+
 
             st.markdown(
                 result
             )
 
-            # =================================================
-            # 複製與下載
-            # =================================================
 
             st.subheader(
-                "7｜複製與下載"
+                "7｜📋 複製完整結果"
             )
 
+
             st.text_area(
-                "完整結果文字",
+
+                "完整 AI 結果",
+
                 value=result,
+
                 height=700,
+
             )
+
 
             current_time = (
                 datetime.now().strftime(
@@ -1353,79 +2284,88 @@ if start_button:
                 )
             )
 
+
             file_name = (
-                f"AI蝦皮半自動化2.5_"
-                f"商品分析_{current_time}.txt"
+
+                "AI蝦皮半自動化2.5_"
+
+                f"{product_name or '商品分析'}_"
+
+                f"{current_time}.txt"
+
             )
 
+
             st.download_button(
-                label="⬇️ 下載完整結果",
+
+                "⬇️ 下載完整 AI 結果",
+
                 data=result.encode(
                     "utf-8"
                 ),
+
                 file_name=file_name,
+
                 mime="text/plain",
+
                 use_container_width=True,
+
             )
 
+
             st.warning(
-                "正式發布前，請人工確認商品名稱、容量、產地、"
-                "成分、保存期限、貨源、售價、庫存、組合數、"
+
+                "正式發布前，請人工確認商品名稱、"
+                "容量、產地、成分、保存期限、"
+                "貨源、售價、庫存、組合數、"
                 "商品規格及分潤資格。"
+
             )
+
 
         except Exception as error:
 
             error_text = str(error)
 
             st.error(
-                "Gemini 分析失敗。"
+                "Gemini AI 分析失敗。"
             )
 
             st.code(
                 error_text
             )
 
+
             if (
-                "API_KEY"
+                "401" in error_text
+                or "API_KEY"
                 in error_text.upper()
-                or "401"
-                in error_text
             ):
 
                 st.warning(
-                    "請檢查 Gemini API 金鑰是否正確，"
-                    "並確認金鑰未被刪除。"
+                    "請檢查 GEMINI_API_KEY。"
                 )
 
+
             elif (
-                "429"
-                in error_text
+                "429" in error_text
                 or "RESOURCE_EXHAUSTED"
                 in error_text
             ):
 
                 st.warning(
-                    "可能已達免費額度或速率限制，"
-                    "請稍後再試。"
+                    "API 額度或速率限制，請稍後再試。"
                 )
 
+
             elif (
-                "404"
-                in error_text
+                "404" in error_text
                 or "NOT_FOUND"
                 in error_text
             ):
 
                 st.warning(
-                    "目前帳戶可能無法使用所列模型，"
-                    "請檢查模型名稱或 API 權限。"
-                )
-
-            else:
-
-                st.warning(
-                    "請檢查網路、API 專案權限與 Google AI Studio 狀態。"
+                    "目前模型名稱或 API 權限可能不正確。"
                 )
 
 
@@ -1436,7 +2376,13 @@ if start_button:
 st.divider()
 
 st.caption(
-    "AI 蝦皮半自動化 2.5 優化版｜"
+
+    "AI 蝦皮半自動化 2.5 PRO｜"
+
+    "會員系統｜"
+
     "即夢 AI 2.5｜"
+
     "AI 內容僅供輔助，正式發布前必須人工確認。"
+
 )
