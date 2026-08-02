@@ -1,4 +1,3 @@
-import io
 import hashlib
 from datetime import datetime, date
 
@@ -23,14 +22,14 @@ st.set_page_config(
 # =========================================================
 
 def hash_password(password):
-    """將密碼轉成 SHA-256"""
+    """SHA-256 密碼雜湊"""
     return hashlib.sha256(
         password.encode("utf-8")
     ).hexdigest()
 
 
 def get_members():
-    """讀取 Streamlit Secrets 會員資料"""
+    """從 Streamlit Secrets 讀取會員資料"""
     try:
         return st.secrets["members"]
     except Exception:
@@ -38,46 +37,59 @@ def get_members():
 
 
 def check_login(username, password):
+    """驗證會員帳號、密碼、狀態、到期日"""
 
     members = get_members()
 
     if username not in members:
-        return False, None
+        return False, "invalid"
 
     member = members[username]
 
-    # 優先使用 password_hash
+    # -----------------------------------------------------
+    # 會員狀態
+    # -----------------------------------------------------
+
+    status = str(
+        member.get("status", "active")
+    ).strip().lower()
+
+    if status != "active":
+        return False, "disabled"
+
+    # -----------------------------------------------------
+    # 密碼驗證
+    # -----------------------------------------------------
+
     saved_hash = str(
         member.get("password_hash", "")
     ).strip()
 
-    # 如果沒有 hash，也支援 password
-    # 方便初期測試
+    saved_password = str(
+        member.get("password", "")
+    )
+
     if saved_hash:
 
         input_hash = hash_password(password)
 
         if input_hash != saved_hash:
-            return False, None
+            return False, "invalid"
+
+    elif saved_password:
+
+        # 初期測試可以直接使用 password
+        if password != saved_password:
+            return False, "invalid"
 
     else:
 
-        saved_password = str(
-            member.get("password", "")
-        )
+        return False, "invalid"
 
-        if password != saved_password:
-            return False, None
+    # -----------------------------------------------------
+    # 到期日
+    # -----------------------------------------------------
 
-    # 檢查帳號狀態
-    status = str(
-        member.get("status", "active")
-    ).lower()
-
-    if status != "active":
-        return False, "disabled"
-
-    # 檢查到期日
     expires_text = str(
         member.get("expires", "")
     ).strip()
@@ -93,10 +105,15 @@ def check_login(username, password):
         return False, "invalid_date"
 
     if date.today() > expires_date:
+
         return False, "expired"
 
     return True, member
 
+
+# =========================================================
+# 🔐 登入頁
+# =========================================================
 
 def login_page():
 
@@ -106,7 +123,18 @@ def login_page():
         .login-box {
             max-width: 520px;
             margin: 70px auto 20px auto;
-            padding: 25px;
+            padding: 20px;
+        }
+
+        .login-title {
+            text-align: center;
+            font-size: 30px;
+            font-weight: bold;
+        }
+
+        .login-subtitle {
+            text-align: center;
+            margin-bottom: 25px;
         }
         </style>
         """,
@@ -118,29 +146,31 @@ def login_page():
         unsafe_allow_html=True,
     )
 
-    st.title("🔐 會員登入")
-
-    st.caption(
-        "AI 蝦皮半自動化 2.5 優化版"
+    st.markdown(
+        '<div class="login-title">🔐 會員登入</div>',
+        unsafe_allow_html=True,
     )
 
-    st.write(
-        "請輸入您的會員帳號與密碼。"
+    st.markdown(
+        '<div class="login-subtitle">'
+        'AI 蝦皮半自動化 2.5 優化版'
+        '</div>',
+        unsafe_allow_html=True,
     )
 
     username = st.text_input(
         "會員帳號",
-        placeholder="輸入會員帳號",
+        placeholder="請輸入會員帳號",
     )
 
     password = st.text_input(
         "會員密碼",
         type="password",
-        placeholder="輸入會員密碼",
+        placeholder="請輸入會員密碼",
     )
 
     login_button = st.button(
-        "🚀 登入系統",
+        "🚀 登入 AI 系統",
         type="primary",
         use_container_width=True,
     )
@@ -156,14 +186,16 @@ def login_page():
         else:
 
             success, result = check_login(
-                username,
+                username.strip(),
                 password,
             )
 
             if success:
 
                 st.session_state.logged_in = True
-                st.session_state.username = username
+                st.session_state.username = (
+                    username.strip()
+                )
                 st.session_state.member = result
 
                 st.rerun()
@@ -183,7 +215,7 @@ def login_page():
             elif result == "invalid_date":
 
                 st.error(
-                    "⛔ 會員資料到期日設定錯誤。"
+                    "⛔ 會員到期日設定錯誤，請聯絡管理員。"
                 )
 
             else:
@@ -199,7 +231,7 @@ def login_page():
 
 
 # =========================================================
-# 初始化登入狀態
+# 初始化 Session
 # =========================================================
 
 if "logged_in" not in st.session_state:
@@ -208,7 +240,7 @@ if "logged_in" not in st.session_state:
 
 
 # =========================================================
-# 尚未登入 → 只顯示登入頁
+# 未登入 → 只顯示登入頁
 # =========================================================
 
 if not st.session_state.logged_in:
@@ -219,7 +251,7 @@ if not st.session_state.logged_in:
 
 
 # =========================================================
-# 目前會員資料
+# 取得目前會員資料
 # =========================================================
 
 current_username = st.session_state.get(
@@ -232,30 +264,43 @@ current_member = st.session_state.get(
     {},
 )
 
-member_name = current_member.get(
-    "name",
-    current_username,
+member_name = str(
+    current_member.get(
+        "name",
+        current_username,
+    )
 )
 
-member_role = current_member.get(
-    "role",
-    "member",
+member_role = str(
+    current_member.get(
+        "role",
+        "member",
+    )
 )
 
-member_expires = current_member.get(
-    "expires",
-    "",
+member_status = str(
+    current_member.get(
+        "status",
+        "active",
+    )
+)
+
+member_expires = str(
+    current_member.get(
+        "expires",
+        "",
+    )
 )
 
 
 # =========================================================
-# 計算剩餘天數
+# 計算會員剩餘天數
 # =========================================================
 
 try:
 
     expire_date = date.fromisoformat(
-        str(member_expires)
+        member_expires
     )
 
     remaining_days = (
@@ -268,12 +313,39 @@ except Exception:
 
 
 # =========================================================
-# 側邊欄會員資訊
+# 再次檢查會員是否已到期
+# =========================================================
+
+if remaining_days < 0:
+
+    st.session_state.logged_in = False
+
+    st.session_state.pop(
+        "username",
+        None,
+    )
+
+    st.session_state.pop(
+        "member",
+        None,
+    )
+
+    st.error(
+        "⛔ 會員資格已到期，請重新聯絡管理員。"
+    )
+
+    st.stop()
+
+
+# =========================================================
+# 👤 側邊欄會員中心
 # =========================================================
 
 with st.sidebar:
 
-    st.markdown("## 👤 會員中心")
+    st.markdown(
+        "## 👤 會員中心"
+    )
 
     st.success(
         f"會員：{member_name}"
@@ -288,13 +360,23 @@ with st.sidebar:
     )
 
     st.write(
+        f"會員狀態：**{member_status}**"
+    )
+
+    st.write(
         f"到期日：**{member_expires}**"
     )
 
-    if remaining_days >= 0:
+    if remaining_days == 0:
+
+        st.warning(
+            "⚠️ 今天是會員最後使用日。"
+        )
+
+    elif remaining_days > 0:
 
         st.write(
-            f"剩餘：**{remaining_days} 天**"
+            f"⏳ 剩餘：**{remaining_days} 天**"
         )
 
     st.divider()
@@ -320,22 +402,26 @@ with st.sidebar:
 
 
 # =========================================================
-# 👑 管理員功能
+# 👑 管理員資訊
 # =========================================================
 
 if member_role.lower() == "admin":
 
     with st.sidebar.expander(
-        "👑 管理員資訊",
+        "👑 管理員中心",
         expanded=False,
     ):
 
-        st.write(
+        st.success(
             "目前登入身份：管理員"
         )
 
+        st.write(
+            "會員資料來源：Streamlit Secrets"
+        )
+
         st.info(
-            "會員資料由 Streamlit Secrets 管理。"
+            "目前版本的會員資料需要在 Secrets 中修改。"
         )
 
 
@@ -368,7 +454,7 @@ MAX_IMAGE_SIZE = 1600
 
 
 # =========================================================
-# API KEY
+# Gemini API KEY
 # =========================================================
 
 def get_api_key():
@@ -379,11 +465,11 @@ def get_api_key():
             st.secrets["GEMINI_API_KEY"]
         ).strip()
 
-        return (
-            api_key
-            if api_key
-            else None
-        )
+        if api_key:
+
+            return api_key
+
+        return None
 
     except Exception:
 
@@ -411,7 +497,9 @@ def prepare_image(uploaded_file):
         "RGBA",
     ):
 
-        image = image.convert("RGB")
+        image = image.convert(
+            "RGB"
+        )
 
     image.thumbnail(
         (
@@ -512,7 +600,6 @@ JIMENG_25_CORE_RULES = """
 七、影片指令
 影片必須維持同一商品身份。
 
-推薦流程：
 Opening：
 商品完整出現並置中。
 
@@ -729,8 +816,6 @@ def build_prompt(
 五、即夢 AI 2.5 生圖指令
 =========================================================
 
-請產生：
-
 【A｜1:1 蝦皮商品主圖】
 
 輸出：
@@ -786,8 +871,6 @@ def build_prompt(
 產生一段：
 「9:16 直式商品展示影片」
 
-輸出：
-
 【Video Prompt】
 完整英文指令。
 
@@ -815,7 +898,6 @@ Scene 4 — Ending
 - 商品保持完整原貌
 
 【Negative Prompt】
-必須明確禁止：
 
 - product deformation
 - product transformation
@@ -1021,7 +1103,7 @@ if uploaded_file is not None:
     except Exception as error:
 
         st.error(
-            "圖片讀取失敗，請換一張 JPG 或 PNG 圖片。"
+            "圖片讀取失敗，請換一張 JPG、PNG 或 WEBP 圖片。"
         )
 
         st.code(
@@ -1087,7 +1169,7 @@ with col2:
 
 
 # =========================================================
-# 3｜平台
+# 3｜目標平台
 # =========================================================
 
 st.subheader(
@@ -1252,7 +1334,7 @@ if start_button:
             )
 
             # =================================================
-            # 複製區
+            # 複製與下載
             # =================================================
 
             st.subheader(
@@ -1285,10 +1367,6 @@ if start_button:
                 mime="text/plain",
                 use_container_width=True,
             )
-
-            # =================================================
-            # 最終提醒
-            # =================================================
 
             st.warning(
                 "正式發布前，請人工確認商品名稱、容量、產地、"
@@ -1340,15 +1418,14 @@ if start_button:
             ):
 
                 st.warning(
-                    "目前帳戶可能無法使用所列模型。"
-                    "請檢查錯誤內容。"
+                    "目前帳戶可能無法使用所列模型，"
+                    "請檢查模型名稱或 API 權限。"
                 )
 
             else:
 
                 st.warning(
-                    "請檢查網路、API 專案權限與 "
-                    "Google AI Studio 狀態。"
+                    "請檢查網路、API 專案權限與 Google AI Studio 狀態。"
                 )
 
 
