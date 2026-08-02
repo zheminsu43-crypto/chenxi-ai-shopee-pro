@@ -1,5 +1,6 @@
 import io
-from datetime import datetime
+import hashlib
+from datetime import datetime, date
 
 import streamlit as st
 from google import genai
@@ -7,7 +8,7 @@ from PIL import Image, ImageOps
 
 
 # =========================================================
-# 辰曦 AI 蝦皮半自動化2.5 優化版PRO
+# AI 蝦皮半自動化 2.5 優化版｜會員登入版
 # =========================================================
 
 st.set_page_config(
@@ -16,12 +17,343 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("AI 蝦皮半自動化2.5 優化版｜")
+
+# =========================================================
+# 🔐 會員系統
+# =========================================================
+
+def hash_password(password):
+    """將密碼轉成 SHA-256"""
+    return hashlib.sha256(
+        password.encode("utf-8")
+    ).hexdigest()
+
+
+def get_members():
+    """讀取 Streamlit Secrets 會員資料"""
+    try:
+        return st.secrets["members"]
+    except Exception:
+        return {}
+
+
+def check_login(username, password):
+
+    members = get_members()
+
+    if username not in members:
+        return False, None
+
+    member = members[username]
+
+    # 優先使用 password_hash
+    saved_hash = str(
+        member.get("password_hash", "")
+    ).strip()
+
+    # 如果沒有 hash，也支援 password
+    # 方便初期測試
+    if saved_hash:
+
+        input_hash = hash_password(password)
+
+        if input_hash != saved_hash:
+            return False, None
+
+    else:
+
+        saved_password = str(
+            member.get("password", "")
+        )
+
+        if password != saved_password:
+            return False, None
+
+    # 檢查帳號狀態
+    status = str(
+        member.get("status", "active")
+    ).lower()
+
+    if status != "active":
+        return False, "disabled"
+
+    # 檢查到期日
+    expires_text = str(
+        member.get("expires", "")
+    ).strip()
+
+    try:
+
+        expires_date = date.fromisoformat(
+            expires_text
+        )
+
+    except Exception:
+
+        return False, "invalid_date"
+
+    if date.today() > expires_date:
+        return False, "expired"
+
+    return True, member
+
+
+def login_page():
+
+    st.markdown(
+        """
+        <style>
+        .login-box {
+            max-width: 520px;
+            margin: 70px auto 20px auto;
+            padding: 25px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="login-box">',
+        unsafe_allow_html=True,
+    )
+
+    st.title("🔐 會員登入")
+
+    st.caption(
+        "AI 蝦皮半自動化 2.5 優化版"
+    )
+
+    st.write(
+        "請輸入您的會員帳號與密碼。"
+    )
+
+    username = st.text_input(
+        "會員帳號",
+        placeholder="輸入會員帳號",
+    )
+
+    password = st.text_input(
+        "會員密碼",
+        type="password",
+        placeholder="輸入會員密碼",
+    )
+
+    login_button = st.button(
+        "🚀 登入系統",
+        type="primary",
+        use_container_width=True,
+    )
+
+    if login_button:
+
+        if not username or not password:
+
+            st.error(
+                "請輸入會員帳號與密碼。"
+            )
+
+        else:
+
+            success, result = check_login(
+                username,
+                password,
+            )
+
+            if success:
+
+                st.session_state.logged_in = True
+                st.session_state.username = username
+                st.session_state.member = result
+
+                st.rerun()
+
+            elif result == "expired":
+
+                st.error(
+                    "⛔ 會員資格已到期，請聯絡管理員續期。"
+                )
+
+            elif result == "disabled":
+
+                st.error(
+                    "⛔ 此會員帳號目前已停權。"
+                )
+
+            elif result == "invalid_date":
+
+                st.error(
+                    "⛔ 會員資料到期日設定錯誤。"
+                )
+
+            else:
+
+                st.error(
+                    "❌ 會員帳號或密碼錯誤。"
+                )
+
+    st.markdown(
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+# =========================================================
+# 初始化登入狀態
+# =========================================================
+
+if "logged_in" not in st.session_state:
+
+    st.session_state.logged_in = False
+
+
+# =========================================================
+# 尚未登入 → 只顯示登入頁
+# =========================================================
+
+if not st.session_state.logged_in:
+
+    login_page()
+
+    st.stop()
+
+
+# =========================================================
+# 目前會員資料
+# =========================================================
+
+current_username = st.session_state.get(
+    "username",
+    "",
+)
+
+current_member = st.session_state.get(
+    "member",
+    {},
+)
+
+member_name = current_member.get(
+    "name",
+    current_username,
+)
+
+member_role = current_member.get(
+    "role",
+    "member",
+)
+
+member_expires = current_member.get(
+    "expires",
+    "",
+)
+
+
+# =========================================================
+# 計算剩餘天數
+# =========================================================
+
+try:
+
+    expire_date = date.fromisoformat(
+        str(member_expires)
+    )
+
+    remaining_days = (
+        expire_date - date.today()
+    ).days
+
+except Exception:
+
+    remaining_days = 0
+
+
+# =========================================================
+# 側邊欄會員資訊
+# =========================================================
+
+with st.sidebar:
+
+    st.markdown("## 👤 會員中心")
+
+    st.success(
+        f"會員：{member_name}"
+    )
+
+    st.write(
+        f"帳號：**{current_username}**"
+    )
+
+    st.write(
+        f"會員等級：**{member_role}**"
+    )
+
+    st.write(
+        f"到期日：**{member_expires}**"
+    )
+
+    if remaining_days >= 0:
+
+        st.write(
+            f"剩餘：**{remaining_days} 天**"
+        )
+
+    st.divider()
+
+    if st.button(
+        "🚪 登出",
+        use_container_width=True,
+    ):
+
+        st.session_state.logged_in = False
+
+        st.session_state.pop(
+            "username",
+            None,
+        )
+
+        st.session_state.pop(
+            "member",
+            None,
+        )
+
+        st.rerun()
+
+
+# =========================================================
+# 👑 管理員功能
+# =========================================================
+
+if member_role.lower() == "admin":
+
+    with st.sidebar.expander(
+        "👑 管理員資訊",
+        expanded=False,
+    ):
+
+        st.write(
+            "目前登入身份：管理員"
+        )
+
+        st.info(
+            "會員資料由 Streamlit Secrets 管理。"
+        )
+
+
+# =========================================================
+# 主標題
+# =========================================================
+
+st.title(
+    "AI 蝦皮半自動化2.5 優化版｜"
+)
 
 st.caption(
-    "即夢 AI 2.5 完整優化版｜商品辨識・AI 選品・蝦皮文案・TikTok 文案・"
+    "即夢 AI 2.5 完整優化版｜"
+    "商品辨識・AI 選品・蝦皮文案・TikTok 文案・"
     "即夢 2.5 生圖・即夢 2.5 影片・分潤合規檢查"
 )
+
+
 # =========================================================
 # 系統設定
 # =========================================================
@@ -40,10 +372,21 @@ MAX_IMAGE_SIZE = 1600
 # =========================================================
 
 def get_api_key():
+
     try:
-        api_key = str(st.secrets["GEMINI_API_KEY"]).strip()
-        return api_key if api_key else None
+
+        api_key = str(
+            st.secrets["GEMINI_API_KEY"]
+        ).strip()
+
+        return (
+            api_key
+            if api_key
+            else None
+        )
+
     except Exception:
+
         return None
 
 
@@ -52,22 +395,44 @@ def get_api_key():
 # =========================================================
 
 def prepare_image(uploaded_file):
+
     uploaded_file.seek(0)
 
-    image = Image.open(uploaded_file)
-    image = ImageOps.exif_transpose(image)
+    image = Image.open(
+        uploaded_file
+    )
 
-    if image.mode not in ("RGB", "RGBA"):
+    image = ImageOps.exif_transpose(
+        image
+    )
+
+    if image.mode not in (
+        "RGB",
+        "RGBA",
+    ):
+
         image = image.convert("RGB")
 
-    image.thumbnail((MAX_IMAGE_SIZE, MAX_IMAGE_SIZE))
+    image.thumbnail(
+        (
+            MAX_IMAGE_SIZE,
+            MAX_IMAGE_SIZE,
+        )
+    )
 
     if image.mode == "RGBA":
-        background = Image.new("RGB", image.size, "white")
+
+        background = Image.new(
+            "RGB",
+            image.size,
+            "white",
+        )
+
         background.paste(
             image,
-            mask=image.getchannel("A")
+            mask=image.getchannel("A"),
         )
+
         image = background
 
     return image
@@ -178,15 +543,20 @@ Ending：
 
 
 # =========================================================
-# 建立辰曦 PRO Prompt
+# 建立 AI Prompt
 # =========================================================
 
-def build_prompt(data, selected_items):
+def build_prompt(
+    data,
+    selected_items,
+):
 
-    selected_text = "、".join(selected_items)
+    selected_text = "、".join(
+        selected_items
+    )
 
     return f"""
-你現在是「辰曦 AI 蝦皮半自動化 PRO」專業電商 AI 營運助手。
+你現在是專業電商 AI 營運助手。
 
 你需要根據：
 1. 使用者上傳的商品圖片
@@ -561,9 +931,15 @@ Scene 4 — Ending
 # Gemini 分析
 # =========================================================
 
-def analyze_with_gemini(api_key, prompt, image):
+def analyze_with_gemini(
+    api_key,
+    prompt,
+    image,
+):
 
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key
+    )
 
     errors = []
 
@@ -579,10 +955,18 @@ def analyze_with_gemini(api_key, prompt, image):
                 ],
             )
 
-            result = getattr(response, "text", None)
+            result = getattr(
+                response,
+                "text",
+                None,
+            )
 
             if result and result.strip():
-                return result.strip(), model_name
+
+                return (
+                    result.strip(),
+                    model_name,
+                )
 
             errors.append(
                 f"{model_name}：沒有回傳文字內容"
@@ -604,7 +988,9 @@ def analyze_with_gemini(api_key, prompt, image):
 # 1｜商品圖片
 # =========================================================
 
-st.subheader("1｜上傳商品圖片")
+st.subheader(
+    "1｜上傳商品圖片"
+)
 
 uploaded_file = st.file_uploader(
     "請上傳商品圖片",
@@ -638,14 +1024,18 @@ if uploaded_file is not None:
             "圖片讀取失敗，請換一張 JPG 或 PNG 圖片。"
         )
 
-        st.code(str(error))
+        st.code(
+            str(error)
+        )
 
 
 # =========================================================
 # 2｜商品資料
 # =========================================================
 
-st.subheader("2｜填寫商品資料")
+st.subheader(
+    "2｜填寫商品資料"
+)
 
 col1, col2 = st.columns(2)
 
@@ -670,6 +1060,7 @@ with col1:
         "分潤比例",
         placeholder="例如：12%",
     )
+
 
 with col2:
 
@@ -699,7 +1090,9 @@ with col2:
 # 3｜平台
 # =========================================================
 
-st.subheader("3｜選擇目標平台")
+st.subheader(
+    "3｜選擇目標平台"
+)
 
 target_platform = st.radio(
     "目標平台",
@@ -716,7 +1109,9 @@ target_platform = st.radio(
 # 4｜生成內容
 # =========================================================
 
-st.subheader("4｜選擇生成內容")
+st.subheader(
+    "4｜選擇生成內容"
+)
 
 generate_options = [
     "商品辨識",
@@ -750,10 +1145,12 @@ if (
 # 5｜啟動
 # =========================================================
 
-st.subheader("5｜開始分析")
+st.subheader(
+    "5｜開始分析"
+)
 
 start_button = st.button(
-    "🚀 啟動辰曦 PRO｜即夢 AI 2.5",
+    "🚀 啟動 AI 蝦皮半自動化 2.5",
     type="primary",
     use_container_width=True,
 )
@@ -823,13 +1220,15 @@ if start_button:
         try:
 
             with st.spinner(
-                "辰曦 PRO 正在分析商品並生成即夢 AI 2.5 專用指令……"
+                "AI 正在分析商品並生成即夢 AI 2.5 專用指令……"
             ):
 
-                result, used_model = analyze_with_gemini(
-                    api_key=api_key,
-                    prompt=prompt,
-                    image=prepared_image,
+                result, used_model = (
+                    analyze_with_gemini(
+                        api_key=api_key,
+                        prompt=prompt,
+                        image=prepared_image,
+                    )
                 )
 
             st.success(
@@ -845,10 +1244,12 @@ if start_button:
             # =================================================
 
             st.subheader(
-                "6｜辰曦 PRO 完整結果"
+                "6｜完整結果"
             )
 
-            st.markdown(result)
+            st.markdown(
+                result
+            )
 
             # =================================================
             # 複製區
@@ -864,18 +1265,22 @@ if start_button:
                 height=700,
             )
 
-            current_time = datetime.now().strftime(
-                "%Y%m%d_%H%M%S"
+            current_time = (
+                datetime.now().strftime(
+                    "%Y%m%d_%H%M%S"
+                )
             )
 
             file_name = (
-                f"辰曦_PRO_即夢2.5_"
+                f"AI蝦皮半自動化2.5_"
                 f"商品分析_{current_time}.txt"
             )
 
             st.download_button(
                 label="⬇️ 下載完整結果",
-                data=result.encode("utf-8"),
+                data=result.encode(
+                    "utf-8"
+                ),
                 file_name=file_name,
                 mime="text/plain",
                 use_container_width=True,
@@ -899,11 +1304,15 @@ if start_button:
                 "Gemini 分析失敗。"
             )
 
-            st.code(error_text)
+            st.code(
+                error_text
+            )
 
             if (
-                "API_KEY" in error_text.upper()
-                or "401" in error_text
+                "API_KEY"
+                in error_text.upper()
+                or "401"
+                in error_text
             ):
 
                 st.warning(
@@ -912,7 +1321,8 @@ if start_button:
                 )
 
             elif (
-                "429" in error_text
+                "429"
+                in error_text
                 or "RESOURCE_EXHAUSTED"
                 in error_text
             ):
@@ -923,14 +1333,14 @@ if start_button:
                 )
 
             elif (
-                "404" in error_text
+                "404"
+                in error_text
                 or "NOT_FOUND"
                 in error_text
             ):
 
                 st.warning(
                     "目前帳戶可能無法使用所列模型。"
-                    "程式已自動嘗試多個備用模型，"
                     "請檢查錯誤內容。"
                 )
 
@@ -949,7 +1359,7 @@ if start_button:
 st.divider()
 
 st.caption(
-    "辰曦 AI 蝦皮半自動化 PRO｜"
-    "即夢 AI 2.5 優化版｜"
+    "AI 蝦皮半自動化 2.5 優化版｜"
+    "即夢 AI 2.5｜"
     "AI 內容僅供輔助，正式發布前必須人工確認。"
 )
