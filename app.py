@@ -1,33 +1,766 @@
+import io
+import os
+import re
+import json
+import hashlib
+import secrets
+from datetime import datetime, date, timedelta
+
+import streamlit as st
+from PIL import Image, ImageOps
+
+# =========================================================
+# AI 蝦皮半自動化 2.5 PRO
+#
+# Gemini API 版本
+#
+# 使用：
+#   Google Gemini API
+#   google-genai
+#
+# 不使用：
+#   GPT / ChatGPT API
+#   WeChat API
+#   LINE API
+#   Supabase
+#   Google OAuth
+#
+# 功能：
+#   會員註冊
+#   會員登入
+#   會員期限
+#   管理員
+#   Gemini 商品圖片分析
+#   商品分析
+#   蝦皮商品文案
+#   即夢 2.5 Prompt
+#   商品圖片處理
+# =========================================================
+
+
+# =========================================================
+# 網頁設定
+# =========================================================
+
+st.set_page_config(
+    page_title="AI 蝦皮半自動化 2.5 PRO",
+    page_icon="🛒",
+    layout="wide",
+)
+
+
+# =========================================================
+# 系統設定
+# =========================================================
+
+APP_NAME = "AI 蝦皮半自動化 2.5 PRO"
+
+DATA_DIR = "data"
+MEMBERS_FILE = os.path.join(DATA_DIR, "members.json")
+
+MAX_IMAGE_SIZE = 1600
+MAX_IMAGE_MB = 20
+
+DEFAULT_MEMBER_DAYS = 30
+
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "admin123"
+
+# Gemini 模型
+GEMINI_MODEL = "gemini-2.5-flash"
+
+
+# =========================================================
+# 建立資料夾
+# =========================================================
+
+os.makedirs(
+    DATA_DIR,
+    exist_ok=True
+)
+
+
+# =========================================================
+# Gemini API
+# =========================================================
+
+def get_gemini_client():
+
+    try:
+
+        from google import genai
+
+    except ImportError:
+
+        return None, (
+            "尚未安裝 google-genai。\n\n"
+            "請在終端機執行：\n"
+            "pip install -U google-genai"
+        )
+
+    # 優先從 Streamlit secrets 讀取
+    api_key = ""
+
+    try:
+
+        api_key = st.secrets.get(
+            "GEMINI_API_KEY",
+            ""
+        )
+
+    except Exception:
+        pass
+
+    # 如果 secrets 沒有，再從環境變數讀取
+    if not api_key:
+
+        api_key = os.getenv(
+            "GEMINI_API_KEY",
+            ""
+        )
+
+    # 最後從 Session 暫存的 API Key 讀取
+    if not api_key:
+
+        api_key = st.session_state.get(
+            "gemini_api_key",
+            ""
+        )
+
+    if not api_key:
+
+        return None, (
+            "尚未設定 Gemini API Key。"
+        )
+
+    try:
+
+        client = genai.Client(
+            api_key=api_key
+        )
+
+        return client, ""
+
+    except Exception as e:
+
+        return None, (
+            f"Gemini 初始化失敗：{e}"
+        )
+
+
+def gemini_text(prompt):
+
+    client, error = get_gemini_client()
+
+    if client is None:
+
+        return None, error
+
+    try:
+
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt
+        )
+
+        text = getattr(
+            response,
+            "text",
+            None
+        )
+
+        if not text:
+
+            return None, (
+                "Gemini 沒有返回文字結果。"
+            )
+
+        return text.strip(), ""
+
+    except Exception as e:
+
+        return None, (
+            f"Gemini API 執行失敗：{e}"
+        )
+
+
+def gemini_image_analysis(
+    image,
+    prompt
+):
+
+    client, error = get_gemini_client()
+
+    if client is None:
+
+        return None, error
+
+    try:
+
+        from google.genai import types
+
+        buffer = io.BytesIO()
+
+        image.save(
+            buffer,
+            format="JPEG",
+            quality=95
+        )
+
+        image_bytes = buffer.getvalue()
+
+        response = client.models.generate_content(
+
+            model=GEMINI_MODEL,
+
+            contents=[
+                types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type="image/jpeg"
+                ),
+                prompt
+            ]
+        )
+
+        text = getattr(
+            response,
+            "text",
+            None
+        )
+
+        if not text:
+
+            return None, (
+                "Gemini 沒有返回圖片分析結果。"
+            )
+
+        return text.strip(), ""
+
+    except Exception as e:
+
+        return None, (
+            f"Gemini 圖片分析失敗：{e}"
+        )
+
+
+# =========================================================
+# 會員資料庫
+# =========================================================
+
+def load_members():
+
+    if not os.path.exists(
+        MEMBERS_FILE
+    ):
+
+        return []
+
+    try:
+
+        with open(
+            MEMBERS_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            data = json.load(f)
+
+        if isinstance(
+            data,
+            list
+        ):
+
+            return data
+
+    except Exception:
+
+        pass
+
+    return []
+
+
+def save_members(
+    members
+):
+
+    with open(
+        MEMBERS_FILE,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            members,
+            f,
+            ensure_ascii=False,
+            indent=2
+        )
+
+
+# =========================================================
+# 密碼
+# =========================================================
+
+def hash_password(
+    password
+):
+
+    salt = secrets.token_hex(
+        16
+    )
+
+    digest = hashlib.sha256(
+        (
+            salt + password
+        ).encode("utf-8")
+    ).hexdigest()
+
+    return (
+        f"{salt}${digest}"
+    )
+
+
+def verify_password(
+    password,
+    saved_value
+):
+
+    try:
+
+        salt, saved_hash = (
+            saved_value.split(
+                "$",
+                1
+            )
+        )
+
+        digest = hashlib.sha256(
+            (
+                salt + password
+            ).encode("utf-8")
+        ).hexdigest()
+
+        return secrets.compare_digest(
+            digest,
+            saved_hash
+        )
+
+    except Exception:
+
+        return False
+
+
+# =========================================================
+# 初始化管理員
+# =========================================================
+
+def ensure_admin():
+
+    members = load_members()
+
+    for member in members:
+
+        if (
+            member.get(
+                "username"
+            )
+            == ADMIN_USERNAME
+        ):
+
+            return
+
+    admin = {
+
+        "id":
+        secrets.token_hex(8),
+
+        "username":
+        ADMIN_USERNAME,
+
+        "password_hash":
+        hash_password(
+            ADMIN_PASSWORD
+        ),
+
+        "name":
+        "系統管理員",
+
+        "email":
+        "",
+
+        "role":
+        "admin",
+
+        "status":
+        "active",
+
+        "expires":
+        (
+            date.today()
+            + timedelta(
+                days=3650
+            )
+        ).isoformat(),
+
+        "created_at":
+        datetime.now().isoformat()
+
+    }
+
+    members.append(
+        admin
+    )
+
+    save_members(
+        members
+    )
+
+
+ensure_admin()
+
+
+# =========================================================
+# 會員查詢
+# =========================================================
+
+def find_member(
+    username
+):
+
+    username = (
+        username
+        .strip()
+        .lower()
+    )
+
+    members = load_members()
+
+    for member in members:
+
+        if (
+            member.get(
+                "username",
+                ""
+            ).lower()
+            == username
+        ):
+
+            return member
+
+    return None
+
+
+def find_member_by_email(
+    email
+):
+
+    email = (
+        email
+        .strip()
+        .lower()
+    )
+
+    if not email:
+
+        return None
+
+    members = load_members()
+
+    for member in members:
+
+        if (
+            member.get(
+                "email",
+                ""
+            ).lower()
+            == email
+        ):
+
+            return member
+
+    return None
+
+
+# =========================================================
+# 建立會員
+# =========================================================
+
+def create_member(
+    username,
+    password,
+    name,
+    email
+):
+
+    username = (
+        username
+        .strip()
+        .lower()
+    )
+
+    email = (
+        email
+        .strip()
+        .lower()
+    )
+
+    if find_member(
+        username
+    ):
+
+        return (
+            False,
+            "帳號已存在。"
+        )
+
+    if (
+        email
+        and find_member_by_email(
+            email
+        )
+    ):
+
+        return (
+            False,
+            "Email 已註冊。"
+        )
+
+    expires = (
+        date.today()
+        + timedelta(
+            days=DEFAULT_MEMBER_DAYS
+        )
+    ).isoformat()
+
+    member = {
+
+        "id":
+        secrets.token_hex(8),
+
+        "username":
+        username,
+
+        "password_hash":
+        hash_password(
+            password
+        ),
+
+        "name":
+        name.strip(),
+
+        "email":
+        email,
+
+        "role":
+        "member",
+
+        "status":
+        "active",
+
+        "expires":
+        expires,
+
+        "created_at":
+        datetime.now().isoformat()
+
+    }
+
+    members = load_members()
+
+    members.append(
+        member
+    )
+
+    save_members(
+        members
+    )
+
+    return (
+        True,
+        member
+    )
+
+
+# =========================================================
+# 更新會員
+# =========================================================
+
+def update_member(
+    member_id,
+    updates
+):
+
+    members = load_members()
+
+    for member in members:
+
+        if (
+            member.get(
+                "id"
+            )
+            == member_id
+        ):
+
+            member.update(
+                updates
+            )
+
+            save_members(
+                members
+            )
+
+            return True
+
+    return False
+
+
+# =========================================================
+# 登入
+# =========================================================
+
+def check_login(
+    username,
+    password
+):
+
+    member = find_member(
+        username
+    )
+
+    if not member:
+
+        return (
+            False,
+            "invalid"
+        )
+
+    status = str(
+        member.get(
+            "status",
+            "active"
+        )
+    ).lower()
+
+    if status != "active":
+
+        return (
+            False,
+            "disabled"
+        )
+
+    saved_hash = str(
+        member.get(
+            "password_hash",
+            ""
+        )
+    )
+
+    if (
+        not saved_hash
+        or not verify_password(
+            password,
+            saved_hash
+        )
+    ):
+
+        return (
+            False,
+            "invalid"
+        )
+
+    expires_text = str(
+        member.get(
+            "expires",
+            ""
+        )
+    )
+
+    try:
+
+        expires_date = date.fromisoformat(
+            expires_text
+        )
+
+    except Exception:
+
+        return (
+            False,
+            "invalid_date"
+        )
+
+    if date.today() > expires_date:
+
+        return (
+            False,
+            "expired"
+        )
+
+    return (
+        True,
+        member
+    )
+
+
 # =========================================================
 # Session
 # =========================================================
 
 if "logged_in" not in st.session_state:
+
     st.session_state.logged_in = False
 
+
 if "page" not in st.session_state:
+
     st.session_state.page = "login"
 
+
 if "analysis_result" not in st.session_state:
+
     st.session_state.analysis_result = ""
 
+
 if "generated_prompt" not in st.session_state:
+
     st.session_state.generated_prompt = ""
 
+
 if "generated_copy" not in st.session_state:
+
     st.session_state.generated_copy = ""
+
+
+if "gemini_analysis" not in st.session_state:
+
+    st.session_state.gemini_analysis = ""
+
+
+if "gemini_api_key" not in st.session_state:
+
+    st.session_state.gemini_api_key = ""
 
 
 def logout():
 
     st.session_state.logged_in = False
 
-    st.session_state.pop("username", None)
-    st.session_state.pop("member", None)
+    st.session_state.pop(
+        "username",
+        None
+    )
+
+    st.session_state.pop(
+        "member",
+        None
+    )
 
     st.session_state.analysis_result = ""
+
     st.session_state.generated_prompt = ""
+
     st.session_state.generated_copy = ""
+
+    st.session_state.gemini_analysis = ""
 
     st.session_state.page = "login"
 
@@ -85,16 +818,20 @@ def login_page():
 
     st.markdown(
         '<div class="main-subtitle">'
-        '會員登入｜商品分析｜圖片處理｜即夢 2.5 指令生成'
+        '會員登入｜Gemini AI｜商品分析｜即夢 2.5'
         '</div>',
         unsafe_allow_html=True
     )
 
-    _, center, _ = st.columns([1, 2, 1])
+    _, center, _ = st.columns(
+        [1, 2, 1]
+    )
 
     with center:
 
-        st.subheader("🔐 會員登入")
+        st.subheader(
+            "🔐 會員登入"
+        )
 
         username = st.text_input(
             "會員帳號",
@@ -115,9 +852,14 @@ def login_page():
             use_container_width=True
         ):
 
-            if not username or not password:
+            if (
+                not username
+                or not password
+            ):
 
-                st.error("請輸入會員帳號與密碼。")
+                st.error(
+                    "請輸入會員帳號與密碼。"
+                )
 
             else:
 
@@ -131,7 +873,9 @@ def login_page():
                     st.session_state.logged_in = True
 
                     st.session_state.username = (
-                        username.strip().lower()
+                        username
+                        .strip()
+                        .lower()
                     )
 
                     st.session_state.member = result
@@ -179,10 +923,12 @@ def login_page():
         st.divider()
 
         st.caption(
-            "本系統使用本機會員帳號與密碼。"
+            "本系統使用會員帳號＋密碼登入。"
         )
 
-        with st.expander("🔐 管理員測試帳號"):
+        with st.expander(
+            "🔐 管理員測試帳號"
+        ):
 
             st.code(
                 "帳號：admin\n密碼：admin123"
@@ -209,11 +955,15 @@ def register_page():
         unsafe_allow_html=True
     )
 
-    _, center, _ = st.columns([1, 2, 1])
+    _, center, _ = st.columns(
+        [1, 2, 1]
+    )
 
     with center:
 
-        st.subheader("👤 建立會員帳號")
+        st.subheader(
+            "👤 建立會員帳號"
+        )
 
         name = st.text_input(
             "姓名 / 暱稱",
@@ -247,19 +997,32 @@ def register_page():
             use_container_width=True
         ):
 
-            username_clean = username.strip().lower()
-            email_clean = email.strip().lower()
+            username_clean = (
+                username
+                .strip()
+                .lower()
+            )
+
+            email_clean = (
+                email
+                .strip()
+                .lower()
+            )
 
             if not name.strip():
 
-                st.error("請輸入姓名或暱稱。")
+                st.error(
+                    "請輸入姓名或暱稱。"
+                )
 
             elif not re.fullmatch(
                 r"[^@\s]+@[^@\s]+\.[^@\s]+",
                 email_clean
             ):
 
-                st.error("請輸入正確 Email。")
+                st.error(
+                    "請輸入正確 Email。"
+                )
 
             elif not re.fullmatch(
                 r"[a-z0-9_]{3,30}",
@@ -304,7 +1067,9 @@ def register_page():
 
                 else:
 
-                    st.error(str(result))
+                    st.error(
+                        str(result)
+                    )
 
         st.divider()
 
@@ -324,7 +1089,10 @@ def register_page():
 
 if not st.session_state.logged_in:
 
-    if st.session_state.page == "register":
+    if (
+        st.session_state.page
+        == "register"
+    ):
 
         register_page()
 
@@ -357,7 +1125,9 @@ if latest_member:
 
     current_member = latest_member
 
-    st.session_state.member = latest_member
+    st.session_state.member = (
+        latest_member
+    )
 
 
 member_id = current_member.get(
@@ -417,13 +1187,18 @@ except Exception:
     remaining_days = -999
 
 
-if member_status.lower() != "active":
+if (
+    member_status.lower()
+    != "active"
+):
 
     st.error(
         "⛔ 此會員帳號目前已停權。"
     )
 
-    if st.button("🚪 返回登入"):
+    if st.button(
+        "🚪 返回登入"
+    ):
 
         logout()
 
@@ -434,7 +1209,9 @@ if member_status.lower() != "active":
 # 商品分類判斷
 # =========================================================
 
-def detect_product_category(text):
+def detect_product_category(
+    text
+):
 
     text = text.lower()
 
@@ -520,10 +1297,10 @@ def detect_product_category(text):
 
 
 # =========================================================
-# 商品分析
+# 本機商品分析
 # =========================================================
 
-def analyze_product(
+def local_product_analysis(
     product_name,
     category,
     price,
@@ -531,7 +1308,9 @@ def analyze_product(
 ):
 
     detected = detect_product_category(
-        product_name + " " + selling_points
+        product_name
+        + " "
+        + selling_points
     )
 
     if category == "自動判斷":
@@ -539,12 +1318,16 @@ def analyze_product(
         category = detected
 
     selling_list = [
+
         x.strip()
+
         for x in re.split(
             r"[,，、\n]+",
             selling_points
         )
+
         if x.strip()
+
     ]
 
     if not selling_list:
@@ -556,21 +1339,28 @@ def analyze_product(
         ]
 
     price_text = (
+
         f"NT$ {price:,.0f}"
+
         if price > 0
+
         else "價格待補"
+
     )
 
     result = f"""
 # 📦 商品分析結果
 
 ## 商品
+
 {product_name or "未輸入商品名稱"}
 
 ## 商品分類
+
 {category}
 
 ## 價格
+
 {price_text}
 
 ## 核心賣點
@@ -578,10 +1368,11 @@ def analyze_product(
 
     for item in selling_list[:8]:
 
-        result += f"- {item}\n"
+        result += (
+            f"- {item}\n"
+        )
 
     result += f"""
-
 ## 🎯 建議銷售定位
 
 此商品可採用「{category}」類型內容進行包裝。
@@ -595,8 +1386,6 @@ def analyze_product(
 5. 消費者購買理由
 
 ## 🛒 蝦皮主圖方向
-
-建議：
 
 - 商品置中
 - 保持商品原始外觀
@@ -612,7 +1401,119 @@ def analyze_product(
 
 
 # =========================================================
-# 即夢 2.5 指令生成
+# Gemini 商品分析 Prompt
+# =========================================================
+
+def build_gemini_product_prompt(
+    product_name,
+    category,
+    price,
+    selling_points
+):
+
+    return f"""
+你是「AI 蝦皮半自動化 2.5 PRO」商品分析助手。
+
+請協助分析以下商品。
+
+商品名稱：
+{product_name}
+
+商品分類：
+{category}
+
+商品價格：
+NT$ {price:,.0f}
+
+使用者提供的賣點：
+{selling_points}
+
+請輸出繁體中文。
+
+請依照以下結構：
+
+# 📦 Gemini AI 商品分析
+
+## 1. 商品辨識
+判斷商品可能是什麼，以及主要用途。
+
+## 2. 商品分類
+如果分類不正確，請提出你判斷的分類。
+
+## 3. 核心賣點
+整理最值得銷售的 5～8 個賣點。
+
+## 4. 消費者痛點
+列出消費者可能遇到的問題。
+
+## 5. 購買理由
+說明為什麼消費者可能購買。
+
+## 6. 蝦皮標題建議
+提供 3 個適合蝦皮的商品標題。
+
+## 7. 蝦皮主圖方向
+提供適合商品主圖的視覺方向。
+
+## 8. 短影音方向
+提供適合 9:16 短影音的拍攝方向。
+
+## 9. 注意事項
+不要虛構產品功能、醫療功效、認證、成分或不存在的規格。
+"""
+
+
+# =========================================================
+# Gemini 商品圖片分析 Prompt
+# =========================================================
+
+def build_image_analysis_prompt():
+
+    return """
+你是電商商品圖片分析專家。
+
+請分析這張商品圖片。
+
+請用繁體中文回答。
+
+請依照以下格式：
+
+# 🖼️ Gemini AI 商品圖片分析
+
+## 1. 商品辨識
+說明圖片中最主要的商品。
+
+## 2. 商品分類
+判斷商品可能屬於：
+保養品、3C、居家、服飾、食品、汽機車或其他。
+
+## 3. 商品外觀
+描述顏色、形狀、材質、包裝與視覺特色。
+
+## 4. 商品文字
+如果圖片上有文字，盡可能辨識。
+不確定的文字請標示「可能」。
+
+## 5. 品牌
+如果可以辨識品牌，請說明。
+如果無法確認，請寫「無法確認」。
+
+## 6. 電商主圖建議
+提供蝦皮主圖的構圖、背景、光線與拍攝方向。
+
+## 7. 即夢 2.5 影片方向
+提供 9:16 商品短影音方向。
+
+## 8. AI 誤判保護
+如果圖片有多個物體，請指出哪一個最適合作為主要商品。
+
+重要：
+不要虛構圖片中不存在的品牌、文字、配件、功能或規格。
+"""
+
+
+# =========================================================
+# 即夢 2.5 Prompt
 # =========================================================
 
 def generate_seedance_prompt(
@@ -630,32 +1531,45 @@ def generate_seedance_prompt(
     if category == "自動判斷":
 
         category = detect_product_category(
-            product_name + " " + selling_points
+            product_name
+            + " "
+            + selling_points
         )
 
     prompt = f"""
 【即夢 2.5 商品影片指令】
 
 主體：
+
 以「{product_name}」作為唯一主要商品主體。
 
 商品分類：
+
 {category}
 
 核心要求：
-保持商品原始外觀、原始比例、原始材質、
-原始顏色與品牌識別。
+
+保持商品原始外觀、
+原始比例、
+原始材質、
+原始顏色、
+原始包裝、
+品牌識別與商品文字。
 
 影片比例：
+
 9:16 垂直短影音。
 
 影片長度：
+
 約 {duration} 秒。
 
 影片風格：
+
 {style}
 
 畫面設計：
+
 高質感商業產品攝影。
 商品清楚置中。
 鏡頭穩定。
@@ -678,14 +1592,19 @@ def generate_seedance_prompt(
 以商品主體作為結尾畫面。
 
 商品賣點：
+
 {selling_points}
 
 AI 誤判保護：
+
 如果輸入圖片中存在多個物體，
-優先選擇最大、最清楚、最具品牌識別性的商品
+優先選擇最大、
+最清楚、
+最具品牌識別性的商品
 作為主要主體。
 
 禁止：
+
 不要任意修改商品外觀。
 不要改變商品品牌。
 不要改變商品文字。
@@ -698,6 +1617,7 @@ AI 誤判保護：
 不要讓商品數量突然增加。
 
 品質：
+
 高細節。
 高解析度。
 自然光影。
@@ -712,10 +1632,89 @@ AI 誤判保護：
 
 
 # =========================================================
+# Gemini 生成即夢 Prompt
+# =========================================================
+
+def generate_gemini_seedance_prompt(
+    product_name,
+    category,
+    selling_points,
+    style,
+    duration
+):
+
+    prompt = f"""
+你是「即夢 2.5 電商短影音 Prompt 專家」。
+
+請根據商品資料，製作一份可以直接複製到即夢使用的繁體中文商品影片指令。
+
+商品名稱：
+{product_name}
+
+商品分類：
+{category}
+
+商品賣點：
+{selling_points}
+
+影片風格：
+{style}
+
+影片長度：
+{duration} 秒
+
+必須包含：
+
+1. 商品主體
+2. 商品原始外觀保護
+3. 9:16 垂直短影音
+4. 鏡頭運動
+5. 光線
+6. 場景
+7. 商品細節
+8. 使用情境
+9. 電商廣告節奏
+10. AI 誤判保護
+11. 禁止商品變形
+12. 禁止錯誤文字
+13. 禁止增加不存在配件
+14. 禁止浮水印
+15. 禁止平台 Logo
+
+最重要：
+
+商品必須保持原始外觀、比例、顏色、材質、包裝與品牌識別。
+
+不要虛構商品不存在的功能。
+
+最後只輸出完整 Prompt，不要額外解釋。
+"""
+
+    result, error = gemini_text(
+        prompt
+    )
+
+    if error:
+
+        return (
+            generate_seedance_prompt(
+                product_name,
+                category,
+                selling_points,
+                style,
+                duration
+            ),
+            "Gemini 暫時不可用，已改用本機 Prompt 模板。"
+        )
+
+    return result, ""
+
+
+# =========================================================
 # 蝦皮商品文案
 # =========================================================
 
-def generate_shopee_copy(
+def generate_shopee_copy_local(
     product_name,
     category,
     selling_points,
@@ -723,12 +1722,16 @@ def generate_shopee_copy(
 ):
 
     points = [
+
         x.strip()
+
         for x in re.split(
             r"[,，、\n]+",
             selling_points
         )
+
         if x.strip()
+
     ]
 
     if not points:
@@ -747,15 +1750,20 @@ def generate_shopee_copy(
     )
 
     price_text = (
+
         f"NT$ {price:,.0f}"
+
         if price > 0
+
         else "價格請見賣場"
+
     )
 
     copy = f"""
 【{product_name}】
 
-✨ 商品分類：{category}
+✨ 商品分類：
+{category}
 
 🔥 商品特色
 
@@ -780,21 +1788,104 @@ def generate_shopee_copy(
 ・不同螢幕可能產生些微色差
 ・實際商品以收到的商品為準
 
-#蝦皮購物
-#{category}
-#好物推薦
-#生活好物
-#熱門商品
+#蝦皮購物 #{category} #好物推薦 #生活好物 #熱門商品
 """
 
     return copy.strip()
 
 
 # =========================================================
+# Gemini 蝦皮文案
+# =========================================================
+
+def generate_shopee_copy_gemini(
+    product_name,
+    category,
+    selling_points,
+    price
+):
+
+    prompt = f"""
+你是蝦皮電商文案專家。
+
+請為以下商品製作繁體中文蝦皮商品文案。
+
+商品名稱：
+{product_name}
+
+商品分類：
+{category}
+
+商品價格：
+NT$ {price:,.0f}
+
+商品賣點：
+{selling_points}
+
+請輸出：
+
+【商品標題】
+
+提供 3 個蝦皮商品標題。
+
+【商品賣點】
+
+整理 5～8 個重點。
+
+【商品介紹】
+
+寫一篇適合蝦皮商品頁的介紹。
+
+【使用情境】
+
+提供 3 個實際使用情境。
+
+【購買理由】
+
+提供 3～5 個購買理由。
+
+【Hashtag】
+
+提供適合的標籤。
+
+規則：
+
+不要虛構商品不存在的功能。
+不要虛構醫療功效。
+不要虛構認證。
+不要虛構規格。
+不要做不實保證。
+
+整體語氣：
+專業、清楚、有銷售力，但不要過度誇張。
+"""
+
+    result, error = gemini_text(
+        prompt
+    )
+
+    if error:
+
+        return (
+            generate_shopee_copy_local(
+                product_name,
+                category,
+                selling_points,
+                price
+            ),
+            "Gemini 暫時不可用，已改用本機文案模板。"
+        )
+
+    return result, ""
+
+
+# =========================================================
 # 圖片處理
 # =========================================================
 
-def process_image(uploaded_file):
+def process_image(
+    uploaded_file
+):
 
     try:
 
@@ -806,20 +1897,35 @@ def process_image(uploaded_file):
             image
         )
 
-        image = image.convert("RGB")
+        image = image.convert(
+            "RGB"
+        )
 
         width, height = image.size
 
-        if max(width, height) > MAX_IMAGE_SIZE:
+        if max(
+            width,
+            height
+        ) > MAX_IMAGE_SIZE:
 
             ratio = (
                 MAX_IMAGE_SIZE
-                / max(width, height)
+                / max(
+                    width,
+                    height
+                )
             )
 
             new_size = (
-                int(width * ratio),
-                int(height * ratio)
+
+                int(
+                    width * ratio
+                ),
+
+                int(
+                    height * ratio
+                )
+
             )
 
             image = image.resize(
@@ -856,7 +1962,9 @@ def home_page():
 
     st.divider()
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4 = st.columns(
+        4
+    )
 
     with col1:
 
@@ -875,22 +1983,26 @@ def home_page():
     with col3:
 
         st.metric(
-            "AI 模式",
-            "本機規則"
+            "AI",
+            "Gemini"
         )
 
     with col4:
 
         st.metric(
-            "外部 API",
-            "未使用"
+            "模型",
+            GEMINI_MODEL
         )
 
     st.divider()
 
-    st.subheader("🚀 系統功能")
+    st.subheader(
+        "🚀 系統功能"
+    )
 
-    c1, c2 = st.columns(2)
+    c1, c2 = st.columns(
+        2
+    )
 
     with c1:
 
@@ -898,8 +2010,8 @@ def home_page():
             """
 📦 **商品分析**
 
-輸入商品名稱、分類、價格與賣點，
-快速產生蝦皮商品分析。
+使用 Gemini AI 分析商品資訊，
+建立商品定位與蝦皮銷售方向。
 """
         )
 
@@ -908,7 +2020,7 @@ def home_page():
 🖼️ **商品圖片**
 
 上傳商品圖片，
-進行圖片預覽與尺寸處理。
+讓 Gemini AI 直接分析圖片中的商品。
 """
         )
 
@@ -916,10 +2028,10 @@ def home_page():
 
         st.info(
             """
-🎬 **即夢 2.5 指令生成**
+🎬 **即夢 2.5**
 
-依照商品資訊，
-建立 9:16 商品短影音指令。
+Gemini AI 協助建立
+9:16 商品短影音 Prompt。
 """
         )
 
@@ -927,8 +2039,8 @@ def home_page():
             """
 ✍️ **蝦皮商品文案**
 
-快速建立商品介紹、
-賣點與標籤內容。
+使用 Gemini AI
+建立商品標題、賣點與商品介紹。
 """
         )
 
@@ -939,10 +2051,12 @@ def home_page():
 
 def product_analysis_page():
 
-    st.title("📦 商品分析")
+    st.title(
+        "📦 Gemini AI 商品分析"
+    )
 
     st.caption(
-        "本頁使用本機規則進行分析。"
+        "使用 Gemini API 分析商品資料。"
     )
 
     product_name = st.text_input(
@@ -978,19 +2092,46 @@ def product_analysis_page():
     )
 
     if st.button(
-        "🔎 開始商品分析",
+        "🤖 Gemini AI 開始分析",
         type="primary",
         use_container_width=True
     ):
 
-        result = analyze_product(
+        prompt = build_gemini_product_prompt(
             product_name,
             category,
             price,
             selling_points
         )
 
-        st.session_state.analysis_result = result
+        with st.spinner(
+            "Gemini 正在分析商品..."
+        ):
+
+            result, error = gemini_text(
+                prompt
+            )
+
+        if error:
+
+            st.warning(
+                error
+            )
+
+            st.info(
+                "目前改用本機規則分析。"
+            )
+
+            result = local_product_analysis(
+                product_name,
+                category,
+                price,
+                selling_points
+            )
+
+        st.session_state.analysis_result = (
+            result
+        )
 
     if st.session_state.analysis_result:
 
@@ -1003,7 +2144,7 @@ def product_analysis_page():
         st.download_button(
             "⬇️ 下載商品分析",
             data=st.session_state.analysis_result,
-            file_name="商品分析.txt",
+            file_name="Gemini商品分析.txt",
             mime="text/plain",
             use_container_width=True
         )
@@ -1015,10 +2156,12 @@ def product_analysis_page():
 
 def image_page():
 
-    st.title("🖼️ 商品圖片")
+    st.title(
+        "🖼️ Gemini AI 商品圖片分析"
+    )
 
     st.caption(
-        "圖片在目前工作階段處理。"
+        "上傳商品圖片後，可以直接交給 Gemini AI 分析。"
     )
 
     uploaded_file = st.file_uploader(
@@ -1031,65 +2174,128 @@ def image_page():
         ]
     )
 
-    if uploaded_file:
+    if not uploaded_file:
 
-        if uploaded_file.size > MAX_IMAGE_MB * 1024 * 1024:
+        return
 
-            st.error(
-                f"圖片太大，請使用 {MAX_IMAGE_MB}MB 以下圖片。"
-            )
+    if uploaded_file.size > (
+        MAX_IMAGE_MB
+        * 1024
+        * 1024
+    ):
 
-            return
-
-        image = process_image(
-            uploaded_file
+        st.error(
+            f"圖片太大，請使用 {MAX_IMAGE_MB}MB 以下圖片。"
         )
 
-        if image is None:
+        return
+
+    image = process_image(
+        uploaded_file
+    )
+
+    if image is None:
+
+        st.error(
+            "圖片讀取失敗。"
+        )
+
+        return
+
+    col1, col2 = st.columns(
+        2
+    )
+
+    with col1:
+
+        st.image(
+            image,
+            caption="商品圖片",
+            use_container_width=True
+        )
+
+    with col2:
+
+        st.subheader(
+            "📐 圖片資訊"
+        )
+
+        st.write(
+            f"尺寸：{image.width} × {image.height}"
+        )
+
+        st.success(
+            "圖片已成功載入。"
+        )
+
+    st.divider()
+
+    if st.button(
+        "🤖 Gemini AI 分析這張商品圖片",
+        type="primary",
+        use_container_width=True
+    ):
+
+        with st.spinner(
+            "Gemini 正在讀取商品圖片..."
+        ):
+
+            result, error = (
+                gemini_image_analysis(
+                    image,
+                    build_image_analysis_prompt()
+                )
+            )
+
+        if error:
 
             st.error(
-                "圖片讀取失敗。"
+                error
             )
 
-            return
+        else:
 
-        col1, col2 = st.columns(2)
-
-        with col1:
-
-            st.image(
-                image,
-                caption="商品圖片",
-                use_container_width=True
+            st.session_state.gemini_analysis = (
+                result
             )
 
-        with col2:
+    if st.session_state.gemini_analysis:
 
-            st.subheader("📐 圖片資訊")
+        st.divider()
 
-            st.write(
-                f"尺寸：{image.width} × {image.height}"
-            )
+        st.subheader(
+            "🤖 Gemini AI 分析結果"
+        )
 
-            st.success(
-                "圖片已成功載入。"
-            )
+        st.markdown(
+            st.session_state.gemini_analysis
+        )
 
-            buffer = io.BytesIO()
+        st.download_button(
+            "⬇️ 下載圖片分析",
+            data=st.session_state.gemini_analysis,
+            file_name="Gemini商品圖片分析.txt",
+            mime="text/plain",
+            use_container_width=True
+        )
 
-            image.save(
-                buffer,
-                format="JPEG",
-                quality=95
-            )
+    st.divider()
 
-            st.download_button(
-                "⬇️ 下載處理後圖片",
-                data=buffer.getvalue(),
-                file_name="product_processed.jpg",
-                mime="image/jpeg",
-                use_container_width=True
-            )
+    buffer = io.BytesIO()
+
+    image.save(
+        buffer,
+        format="JPEG",
+        quality=95
+    )
+
+    st.download_button(
+        "⬇️ 下載處理後圖片",
+        data=buffer.getvalue(),
+        file_name="product_processed.jpg",
+        mime="image/jpeg",
+        use_container_width=True
+    )
 
 
 # =========================================================
@@ -1098,10 +2304,12 @@ def image_page():
 
 def seedance_page():
 
-    st.title("🎬 即夢 2.5 指令生成")
+    st.title(
+        "🎬 Gemini AI × 即夢 2.5"
+    )
 
     st.caption(
-        "根據商品資料建立 9:16 商品短影音指令詞。"
+        "Gemini AI 協助建立 9:16 商品短影音指令。"
     )
 
     product_name = st.text_input(
@@ -1154,26 +2362,42 @@ def seedance_page():
     )
 
     if st.button(
-        "🎬 生成即夢 2.5 指令",
+        "🎬 Gemini 生成即夢 2.5 指令",
         type="primary",
         use_container_width=True
     ):
 
-        prompt = generate_seedance_prompt(
-            product_name,
-            category,
-            selling_points,
-            style,
-            duration
-        )
+        with st.spinner(
+            "Gemini 正在製作即夢 2.5 Prompt..."
+        ):
 
-        st.session_state.generated_prompt = prompt
+            prompt, notice = (
+                generate_gemini_seedance_prompt(
+                    product_name,
+                    category,
+                    selling_points,
+                    style,
+                    duration
+                )
+            )
+
+        if notice:
+
+            st.warning(
+                notice
+            )
+
+        st.session_state.generated_prompt = (
+            prompt
+        )
 
     if st.session_state.generated_prompt:
 
         st.divider()
 
-        st.subheader("📋 即夢 2.5 指令")
+        st.subheader(
+            "📋 即夢 2.5 指令"
+        )
 
         st.code(
             st.session_state.generated_prompt,
@@ -1181,7 +2405,7 @@ def seedance_page():
         )
 
         st.download_button(
-            "⬇️ 下載指令",
+            "⬇️ 下載即夢 2.5 指令",
             data=st.session_state.generated_prompt,
             file_name="即夢2.5商品影片指令.txt",
             mime="text/plain",
@@ -1195,7 +2419,9 @@ def seedance_page():
 
 def copy_page():
 
-    st.title("✍️ 蝦皮商品文案")
+    st.title(
+        "✍️ Gemini AI 蝦皮商品文案"
+    )
 
     product_name = st.text_input(
         "商品名稱",
@@ -1232,36 +2458,52 @@ def copy_page():
     )
 
     if st.button(
-        "✍️ 生成蝦皮商品文案",
+        "🤖 Gemini 生成蝦皮商品文案",
         type="primary",
         use_container_width=True
     ):
 
-        copy = generate_shopee_copy(
-            product_name,
-            category,
-            selling_points,
-            price
-        )
+        with st.spinner(
+            "Gemini 正在生成商品文案..."
+        ):
 
-        st.session_state.generated_copy = copy
+            copy, notice = (
+                generate_shopee_copy_gemini(
+                    product_name,
+                    category,
+                    selling_points,
+                    price
+                )
+            )
+
+        if notice:
+
+            st.warning(
+                notice
+            )
+
+        st.session_state.generated_copy = (
+            copy
+        )
 
     if st.session_state.generated_copy:
 
         st.divider()
 
-        st.subheader("🛒 商品文案")
+        st.subheader(
+            "🛒 商品文案"
+        )
 
         st.text_area(
             "可直接複製",
             value=st.session_state.generated_copy,
-            height=400
+            height=450
         )
 
         st.download_button(
             "⬇️ 下載商品文案",
             data=st.session_state.generated_copy,
-            file_name="蝦皮商品文案.txt",
+            file_name="Gemini蝦皮商品文案.txt",
             mime="text/plain",
             use_container_width=True
         )
@@ -1273,9 +2515,13 @@ def copy_page():
 
 def member_page():
 
-    st.title("👤 我的會員資料")
+    st.title(
+        "👤 我的會員資料"
+    )
 
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns(
+        2
+    )
 
     with col1:
 
@@ -1324,7 +2570,9 @@ def admin_page():
 
         return
 
-    st.title("👑 管理員中心")
+    st.title(
+        "👑 管理員中心"
+    )
 
     members = load_members()
 
@@ -1379,7 +2627,9 @@ def admin_page():
 
             if role != "admin":
 
-                c1, c2 = st.columns(2)
+                c1, c2 = st.columns(
+                    2
+                )
 
                 with c1:
 
@@ -1413,34 +2663,52 @@ def admin_page():
                 ):
 
                     updates = {
-                        "status": new_status
+                        "status":
+                        new_status
                     }
 
                     if add_days > 0:
 
                         try:
 
-                            current_expire = date.fromisoformat(
-                                expires
+                            current_expire = (
+                                date.fromisoformat(
+                                    expires
+                                )
                             )
 
                         except Exception:
 
-                            current_expire = date.today()
+                            current_expire = (
+                                date.today()
+                            )
 
-                        if current_expire < date.today():
+                        if (
+                            current_expire
+                            < date.today()
+                        ):
 
-                            current_expire = date.today()
+                            current_expire = (
+                                date.today()
+                            )
 
                         new_expire = (
                             current_expire
-                            + timedelta(days=int(add_days))
+                            + timedelta(
+                                days=int(
+                                    add_days
+                                )
+                            )
                         ).isoformat()
 
-                        updates["expires"] = new_expire
+                        updates[
+                            "expires"
+                        ] = new_expire
 
                     update_member(
-                        member.get("id"),
+                        member.get(
+                            "id"
+                        ),
                         updates
                     )
 
@@ -1452,12 +2720,105 @@ def admin_page():
 
 
 # =========================================================
+# Gemini 設定頁
+# =========================================================
+
+def gemini_settings_page():
+
+    st.title(
+        "🤖 Gemini API 設定"
+    )
+
+    st.info(
+        """
+這裡只設定 Gemini API Key。
+
+本程式沒有 GPT / ChatGPT API、
+WeChat、LINE、Supabase 或 Google OAuth。
+"""
+    )
+
+    st.subheader(
+        "🔑 Gemini API Key"
+    )
+
+    api_key = st.text_input(
+        "輸入 Gemini API Key",
+        type="password",
+        value=st.session_state.get(
+            "gemini_api_key",
+            ""
+        ),
+        placeholder="貼上你的 Gemini API Key"
+    )
+
+    if st.button(
+        "💾 儲存 Gemini API Key",
+        type="primary",
+        use_container_width=True
+    ):
+
+        if not api_key.strip():
+
+            st.error(
+                "請輸入 Gemini API Key。"
+            )
+
+        else:
+
+            st.session_state.gemini_api_key = (
+                api_key.strip()
+            )
+
+            st.success(
+                "Gemini API Key 已暫存在目前工作階段。"
+            )
+
+            st.info(
+                "重新啟動程式後，若沒有放入 secrets / 環境變數，需要再次輸入。"
+            )
+
+    st.divider()
+
+    st.write(
+        f"目前模型：**{GEMINI_MODEL}**"
+    )
+
+    if st.button(
+        "🧪 測試 Gemini API",
+        use_container_width=True
+    ):
+
+        with st.spinner(
+            "測試 Gemini..."
+        ):
+
+            result, error = gemini_text(
+                "請只回答：Gemini API 測試成功。"
+            )
+
+        if error:
+
+            st.error(
+                error
+            )
+
+        else:
+
+            st.success(
+                result
+            )
+
+
+# =========================================================
 # 側邊欄
 # =========================================================
 
 with st.sidebar:
 
-    st.title("🛒 AI 蝦皮 2.5 PRO")
+    st.title(
+        "🛒 AI 蝦皮 2.5 PRO"
+    )
 
     st.divider()
 
@@ -1471,11 +2832,15 @@ with st.sidebar:
 
     if member_role == "admin":
 
-        st.success("👑 管理員")
+        st.success(
+            "👑 管理員"
+        )
 
     else:
 
-        st.info("👤 一般會員")
+        st.info(
+            "👤 一般會員"
+        )
 
     st.write(
         f"📅 到期日：{member_expires}"
@@ -1488,12 +2853,21 @@ with st.sidebar:
     st.divider()
 
     menu_options = [
+
         "🏠 系統首頁",
-        "📦 商品分析",
-        "🖼️ 商品圖片",
-        "🎬 即夢 2.5 指令生成",
-        "✍️ 蝦皮商品文案",
+
+        "📦 Gemini 商品分析",
+
+        "🖼️ Gemini 商品圖片分析",
+
+        "🎬 Gemini × 即夢 2.5",
+
+        "✍️ Gemini 蝦皮商品文案",
+
+        "🤖 Gemini API 設定",
+
         "👤 我的會員資料"
+
     ]
 
     if member_role == "admin":
@@ -1525,21 +2899,25 @@ if menu == "🏠 系統首頁":
 
     home_page()
 
-elif menu == "📦 商品分析":
+elif menu == "📦 Gemini 商品分析":
 
     product_analysis_page()
 
-elif menu == "🖼️ 商品圖片":
+elif menu == "🖼️ Gemini 商品圖片分析":
 
     image_page()
 
-elif menu == "🎬 即夢 2.5 指令生成":
+elif menu == "🎬 Gemini × 即夢 2.5":
 
     seedance_page()
 
-elif menu == "✍️ 蝦皮商品文案":
+elif menu == "✍️ Gemini 蝦皮商品文案":
 
     copy_page()
+
+elif menu == "🤖 Gemini API 設定":
+
+    gemini_settings_page()
 
 elif menu == "👤 我的會員資料":
 
@@ -1557,5 +2935,5 @@ elif menu == "👑 管理員中心":
 st.divider()
 
 st.caption(
-    "AI 蝦皮半自動化 2.5 PRO｜純本機規則模式｜無外部 API"
+    "AI 蝦皮半自動化 2.5 PRO｜Gemini API｜會員系統｜即夢 2.5｜蝦皮商品工具"
 )
