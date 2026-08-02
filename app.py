@@ -22,38 +22,7 @@ except ImportError:
 
 
 # =========================================================
-# AI 蝦皮半自動化 2.5 PRO
-#
-# Gemini API 正式版本
-#
-# 功能：
-# 會員註冊
-# 會員登入
-# 會員期限
-# 管理員
-# 商品圖片上傳
-# Gemini 圖片分析
-# AI 選品分析
-# 蝦皮商品文案
-# TikTok 文案
-# 即夢 AI 2.5 生圖 Prompt
-# 即夢 AI 2.5 影片 Prompt
-# 爆款帶貨影片 Prompt
-# 分潤合規檢查
-#
-# Gemini 模型：
-# 不再固定使用失效的 gemini-2.5-flash
-#
-# 系統會：
-# 1. 讀取 Gemini API 可用模型
-# 2. 找出支援 generateContent 的模型
-# 3. 依照優先順序自動選擇
-#
-# =========================================================
-
-
-# =========================================================
-# Streamlit 網頁設定
+# 網頁設定
 # =========================================================
 
 st.set_page_config(
@@ -64,17 +33,13 @@ st.set_page_config(
 
 
 # =========================================================
-# 系統設定
+# 系統基本設定
 # =========================================================
 
 APP_NAME = "AI 蝦皮半自動化 2.5 PRO"
 
 DATA_DIR = "data"
-
-MEMBERS_FILE = os.path.join(
-    DATA_DIR,
-    "members.json",
-)
+MEMBERS_FILE = os.path.join(DATA_DIR, "members.json")
 
 MAX_IMAGE_SIZE = 1600
 MAX_IMAGE_MB = 20
@@ -86,33 +51,34 @@ ADMIN_PASSWORD = "admin123"
 
 
 # =========================================================
-# Gemini 模型優先順序
+# Gemini 模型
 #
-# 重要：
-# 不再固定 gemini-2.5-flash。
+# 目前使用官方穩定模型。
 #
-# 系統會先嘗試目前較新的模型，
-# 如果你的 API 帳戶沒有該模型，
-# 會自動從 models.list() 找真正可用模型。
+# 優先：
+# 1. gemini-3.5-flash
+# 2. gemini-3.1-flash-lite
+# 3. gemini-2.5-flash-lite
+#
+# 不再使用：
+# gemini-2.5-flash
+#
+# 因為你的 API Key 已經回傳：
+# 404 NOT_FOUND / no longer available to new users
 # =========================================================
 
-GEMINI_MODEL_PREFERENCES = [
-    "gemini-3.6-flash",
-    "gemini-3.5-flash-lite",
+GEMINI_MODEL_CANDIDATES = [
+    "gemini-3.5-flash",
     "gemini-3.1-flash-lite",
     "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
 ]
 
 
 # =========================================================
-# 建立資料夾
+# 建立資料資料夾
 # =========================================================
 
-os.makedirs(
-    DATA_DIR,
-    exist_ok=True,
-)
+os.makedirs(DATA_DIR, exist_ok=True)
 
 
 # =========================================================
@@ -145,13 +111,6 @@ st.markdown(
         margin-bottom: 20px;
     }
 
-    .gemini-ok {
-        padding: 12px;
-        border-radius: 10px;
-        border: 1px solid rgba(0,180,100,.3);
-        margin-bottom: 12px;
-    }
-
     </style>
     """,
     unsafe_allow_html=True,
@@ -159,7 +118,7 @@ st.markdown(
 
 
 # =========================================================
-# 會員資料庫
+# 會員資料
 # =========================================================
 
 def load_members():
@@ -184,10 +143,7 @@ def load_members():
 
 
 def save_members(members):
-    os.makedirs(
-        DATA_DIR,
-        exist_ok=True,
-    )
+    os.makedirs(DATA_DIR, exist_ok=True)
 
     with open(
         MEMBERS_FILE,
@@ -210,28 +166,18 @@ def hash_password(password):
     salt = secrets.token_hex(16)
 
     digest = hashlib.sha256(
-        (
-            salt + password
-        ).encode("utf-8")
+        (salt + password).encode("utf-8")
     ).hexdigest()
 
     return f"{salt}${digest}"
 
 
-def verify_password(
-    password,
-    saved_value,
-):
+def verify_password(password, saved_value):
     try:
-        salt, saved_hash = saved_value.split(
-            "$",
-            1,
-        )
+        salt, saved_hash = saved_value.split("$", 1)
 
         digest = hashlib.sha256(
-            (
-                salt + password
-            ).encode("utf-8")
+            (salt + password).encode("utf-8")
         ).hexdigest()
 
         return secrets.compare_digest(
@@ -244,7 +190,7 @@ def verify_password(
 
 
 # =========================================================
-# 初始化管理員
+# 管理員初始化
 # =========================================================
 
 def ensure_admin():
@@ -257,22 +203,18 @@ def ensure_admin():
     admin = {
         "id": secrets.token_hex(8),
         "username": ADMIN_USERNAME,
-        "password_hash": hash_password(
-            ADMIN_PASSWORD
-        ),
+        "password_hash": hash_password(ADMIN_PASSWORD),
         "name": "系統管理員",
         "email": "",
         "role": "admin",
         "status": "active",
         "expires": (
-            date.today()
-            + timedelta(days=3650)
+            date.today() + timedelta(days=3650)
         ).isoformat(),
         "created_at": datetime.now().isoformat(),
     }
 
     members.append(admin)
-
     save_members(members)
 
 
@@ -284,22 +226,11 @@ ensure_admin()
 # =========================================================
 
 def find_member(username):
-    username = (
-        str(username)
-        .strip()
-        .lower()
-    )
+    username = str(username).strip().lower()
 
-    members = load_members()
-
-    for member in members:
+    for member in load_members():
         if (
-            str(
-                member.get(
-                    "username",
-                    "",
-                )
-            ).lower()
+            str(member.get("username", "")).lower()
             == username
         ):
             return member
@@ -308,25 +239,14 @@ def find_member(username):
 
 
 def find_member_by_email(email):
-    email = (
-        str(email)
-        .strip()
-        .lower()
-    )
+    email = str(email).strip().lower()
 
     if not email:
         return None
 
-    members = load_members()
-
-    for member in members:
+    for member in load_members():
         if (
-            str(
-                member.get(
-                    "email",
-                    "",
-                )
-            ).lower()
+            str(member.get("email", "")).lower()
             == email
         ):
             return member
@@ -344,44 +264,25 @@ def create_member(
     name,
     email,
 ):
-    username = (
-        username
-        .strip()
-        .lower()
-    )
-
-    email = (
-        email
-        .strip()
-        .lower()
-    )
+    username = str(username).strip().lower()
+    email = str(email).strip().lower()
 
     if find_member(username):
-        return (
-            False,
-            "帳號已存在。",
-        )
+        return False, "帳號已存在。"
 
     if email and find_member_by_email(email):
-        return (
-            False,
-            "Email 已註冊。",
-        )
+        return False, "Email 已註冊。"
 
     expires = (
         date.today()
-        + timedelta(
-            days=DEFAULT_MEMBER_DAYS
-        )
+        + timedelta(days=DEFAULT_MEMBER_DAYS)
     ).isoformat()
 
     member = {
         "id": secrets.token_hex(8),
         "username": username,
-        "password_hash": hash_password(
-            password
-        ),
-        "name": name.strip(),
+        "password_hash": hash_password(password),
+        "name": str(name).strip(),
         "email": email,
         "role": "member",
         "status": "active",
@@ -390,33 +291,23 @@ def create_member(
     }
 
     members = load_members()
-
     members.append(member)
-
     save_members(members)
 
-    return (
-        True,
-        member,
-    )
+    return True, member
 
 
 # =========================================================
 # 更新會員
 # =========================================================
 
-def update_member(
-    member_id,
-    updates,
-):
+def update_member(member_id, updates):
     members = load_members()
 
     for member in members:
         if member.get("id") == member_id:
             member.update(updates)
-
             save_members(members)
-
             return True
 
     return False
@@ -426,104 +317,68 @@ def update_member(
 # 登入
 # =========================================================
 
-def check_login(
-    username,
-    password,
-):
+def check_login(username, password):
     member = find_member(username)
 
     if not member:
-        return (
-            False,
-            "invalid",
-        )
+        return False, "invalid"
 
     status = str(
-        member.get(
-            "status",
-            "active",
-        )
+        member.get("status", "active")
     ).lower()
 
     if status != "active":
-        return (
-            False,
-            "disabled",
-        )
+        return False, "disabled"
 
     saved_hash = str(
-        member.get(
-            "password_hash",
-            "",
-        )
+        member.get("password_hash", "")
     )
 
-    if (
-        not saved_hash
-        or not verify_password(
-            password,
-            saved_hash,
-        )
+    if not saved_hash:
+        return False, "invalid"
+
+    if not verify_password(
+        password,
+        saved_hash,
     ):
-        return (
-            False,
-            "invalid",
-        )
+        return False, "invalid"
 
     expires_text = str(
-        member.get(
-            "expires",
-            "",
-        )
+        member.get("expires", "")
     )
 
     try:
         expires_date = date.fromisoformat(
             expires_text
         )
-
     except Exception:
-        return (
-            False,
-            "invalid_date",
-        )
+        return False, "invalid_date"
 
     if date.today() > expires_date:
-        return (
-            False,
-            "expired",
-        )
+        return False, "expired"
 
-    return (
-        True,
-        member,
-    )
+    return True, member
 
 
 # =========================================================
 # Session State
 # =========================================================
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
+DEFAULT_SESSION_VALUES = {
+    "logged_in": False,
+    "page": "login",
+    "username": "",
+    "member": {},
+    "analysis_result": "",
+    "analysis_mode": "",
+    "gemini_model": "",
+    "gemini_error": "",
+}
 
-if "page" not in st.session_state:
-    st.session_state.page = "login"
 
-if "analysis_result" not in st.session_state:
-    st.session_state.analysis_result = ""
-
-if "analysis_mode" not in st.session_state:
-    st.session_state.analysis_mode = ""
-
-if "gemini_model" not in st.session_state:
-    st.session_state.gemini_model = ""
-
-if "gemini_error" not in st.session_state:
-    st.session_state.gemini_error = ""
-
-if "available_gemini_models" not in st.session_state:
-    st.session_state.available_gemini_models = []
+for key, value in DEFAULT_SESSION_VALUES.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
 
 
 # =========================================================
@@ -532,22 +387,12 @@ if "available_gemini_models" not in st.session_state:
 
 def logout():
     st.session_state.logged_in = False
-
-    st.session_state.pop(
-        "username",
-        None,
-    )
-
-    st.session_state.pop(
-        "member",
-        None,
-    )
-
+    st.session_state.username = ""
+    st.session_state.member = {}
     st.session_state.analysis_result = ""
     st.session_state.analysis_mode = ""
     st.session_state.gemini_model = ""
     st.session_state.gemini_error = ""
-
     st.session_state.page = "login"
 
     st.rerun()
@@ -558,15 +403,6 @@ def logout():
 # =========================================================
 
 def get_gemini_api_key():
-    """
-    API Key 優先順序：
-
-    1. Streamlit Secrets
-    2. 環境變數
-
-    不把 API Key 寫死。
-    """
-
     api_key = ""
 
     try:
@@ -598,174 +434,13 @@ def get_gemini_client(api_key):
     if genai is None:
         return None
 
-    try:
-        return genai.Client(
-            api_key=api_key
-        )
-    except Exception:
-        return None
-
-
-# =========================================================
-# 模型名稱整理
-# =========================================================
-
-def clean_model_name(model_name):
-    """
-    Google models.list() 有時回傳：
-        models/gemini-xxx
-
-    generate_content 使用：
-        gemini-xxx
-
-    因此統一移除 models/。
-    """
-
-    name = str(
-        model_name or ""
-    ).strip()
-
-    if name.startswith("models/"):
-        name = name[len("models/"):]
-
-    return name
-
-
-# =========================================================
-# 取得 API 帳號目前真正可用模型
-# =========================================================
-
-def list_available_gemini_models(client):
-    """
-    從 Gemini API 讀取目前帳號可使用的模型。
-
-    只保留支援 generateContent 的模型。
-    """
-
-    if client is None:
-        return []
-
-    available = []
-
-    try:
-        for model in client.models.list():
-            name = clean_model_name(
-                getattr(
-                    model,
-                    "name",
-                    "",
-                )
-            )
-
-            if not name:
-                continue
-
-            supported_actions = getattr(
-                model,
-                "supported_actions",
-                None,
-            )
-
-            supports_generate = False
-
-            if supported_actions:
-                try:
-                    supports_generate = (
-                        "generateContent"
-                        in supported_actions
-                    )
-                except Exception:
-                    supports_generate = False
-
-            # 某些 SDK 版本可能沒有正確帶出 supported_actions。
-            # 如果名稱是 Gemini 模型，保留給後面的實際呼叫測試。
-            if supports_generate:
-                available.append(name)
-
-            elif (
-                name.startswith("gemini-")
-                and "embedding" not in name.lower()
-                and "tts" not in name.lower()
-                and "live" not in name.lower()
-            ):
-                available.append(name)
-
-    except Exception:
-        return []
-
-    # 去除重複
-    result = []
-
-    for item in available:
-        if item not in result:
-            result.append(item)
-
-    return result
-
-
-# =========================================================
-# 模型排序
-# =========================================================
-
-def rank_gemini_models(available_models):
-    """
-    將 API 實際回傳的模型依照我們的優先順序排序。
-
-    重要：
-    只有 API 回傳的模型才會被優先選用。
-    """
-
-    available = [
-        clean_model_name(x)
-        for x in available_models
-    ]
-
-    available = list(
-        dict.fromkeys(available)
+    return genai.Client(
+        api_key=api_key
     )
 
-    ranked = []
-
-    # 1. 精準名稱優先
-    for preferred in GEMINI_MODEL_PREFERENCES:
-        if preferred in available:
-            if preferred not in ranked:
-                ranked.append(preferred)
-
-    # 2. 再找名稱相近模型
-    keywords = [
-        "gemini-3.6-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-flash-lite",
-        "gemini-2.5-flash-lite",
-        "gemini-2.5-flash",
-    ]
-
-    for keyword in keywords:
-        for model_name in available:
-            if model_name == keyword:
-                continue
-
-            if keyword in model_name:
-                if model_name not in ranked:
-                    ranked.append(model_name)
-
-    # 3. 最後才放其他可用 Gemini 模型
-    for model_name in available:
-        if (
-            model_name.startswith("gemini-")
-            and model_name not in ranked
-            and "embedding" not in model_name.lower()
-            and "tts" not in model_name.lower()
-            and "live" not in model_name.lower()
-        ):
-            ranked.append(model_name)
-
-    return ranked
-
 
 # =========================================================
-# Gemini 錯誤分類
+# Gemini 錯誤處理
 # =========================================================
 
 def explain_gemini_error(error):
@@ -779,11 +454,13 @@ def explain_gemini_error(error):
         or "no longer available" in lower
     ):
         return (
-            "Gemini 模型不存在、已停用，"
-            "或目前 API 帳戶無法使用該模型。\n\n"
-            "本版本已改成先讀取 Gemini API "
-            "目前真正可用的模型，不再固定使用 "
+            "Gemini 模型無法使用。\n\n"
+            "系統已經不再固定使用 "
             "gemini-2.5-flash。\n\n"
+            "目前系統會依序嘗試：\n"
+            "1. gemini-3.5-flash\n"
+            "2. gemini-3.1-flash-lite\n"
+            "3. gemini-2.5-flash-lite\n\n"
             f"原始錯誤：{text}"
         )
 
@@ -796,8 +473,8 @@ def explain_gemini_error(error):
     ):
         return (
             "Gemini API Key 無效。\n\n"
-            "請檢查 Streamlit Secrets：\n"
-            "GEMINI_API_KEY = \"你的 Gemini API Key\"\n\n"
+            "請檢查 Streamlit Secrets 的：\n"
+            "GEMINI_API_KEY\n\n"
             f"原始錯誤：{text}"
         )
 
@@ -805,7 +482,7 @@ def explain_gemini_error(error):
         return (
             "Gemini API 權限不足。\n\n"
             "請確認 API Key、Google AI Studio "
-            "專案與模型權限。\n\n"
+            "專案與 API 權限。\n\n"
             f"原始錯誤：{text}"
         )
 
@@ -816,14 +493,14 @@ def explain_gemini_error(error):
     ):
         return (
             "Gemini API 額度或速率限制。\n\n"
-            "請稍後再試，或確認 API 帳戶目前可用額度。\n\n"
+            "請稍後再試，或確認 API 帳戶額度。\n\n"
             f"原始錯誤：{text}"
         )
 
     if "400" in lower:
         return (
             "Gemini API 請求格式錯誤。\n\n"
-            "請確認圖片格式、Prompt 與 google-genai SDK。\n\n"
+            "請確認 google-genai 套件版本與圖片格式。\n\n"
             f"原始錯誤：{text}"
         )
 
@@ -848,87 +525,45 @@ def call_gemini(
         raise RuntimeError(
             "找不到 GEMINI_API_KEY。\n\n"
             "請在 Streamlit Secrets 設定：\n"
-            "GEMINI_API_KEY = \"你的 Gemini API Key\""
+            'GEMINI_API_KEY = "你的 Gemini API Key"'
         )
 
     if genai is None:
         raise RuntimeError(
             "尚未安裝 google-genai。\n\n"
-            "請確認 requirements.txt 有：\n"
+            "請在 requirements.txt 加入：\n"
             "google-genai"
         )
 
-    client = get_gemini_client(
-        api_key
-    )
+    if types is None:
+        raise RuntimeError(
+            "google.genai.types 無法載入。\n\n"
+            "請更新 google-genai。"
+        )
+
+    client = get_gemini_client(api_key)
 
     if client is None:
         raise RuntimeError(
-            "Gemini Client 建立失敗。\n\n"
-            "請確認 GEMINI_API_KEY 是否正確。"
-        )
-
-    # -----------------------------------------------------
-    # 第一步：直接從 API 取得模型
-    # -----------------------------------------------------
-
-    discovered_models = list_available_gemini_models(
-        client
-    )
-
-    ranked_models = rank_gemini_models(
-        discovered_models
-    )
-
-    # 保存到 Session
-    st.session_state.available_gemini_models = (
-        ranked_models
-    )
-
-    # -----------------------------------------------------
-    # 如果 API 能列出模型
-    # 只使用 API 真正回傳的模型。
-    # -----------------------------------------------------
-
-    models_to_try = list(ranked_models)
-
-    # -----------------------------------------------------
-    # 如果 models.list() 無法使用，
-    # 才使用保守 fallback。
-    # -----------------------------------------------------
-
-    if not models_to_try:
-        models_to_try = list(
-            GEMINI_MODEL_PREFERENCES
+            "Gemini Client 建立失敗。"
         )
 
     errors = []
 
-    # -----------------------------------------------------
-    # 建立 Gemini Contents
-    # -----------------------------------------------------
-
-    contents = []
-
-    if (
-        image_bytes
-        and types is not None
-    ):
-        contents.append(
-            types.Part.from_bytes(
-                data=image_bytes,
-                mime_type=mime_type,
-            )
-        )
-
-    contents.append(prompt)
-
-    # -----------------------------------------------------
-    # 逐個模型嘗試
-    # -----------------------------------------------------
-
-    for model_name in models_to_try:
+    for model_name in GEMINI_MODEL_CANDIDATES:
         try:
+            contents = []
+
+            if image_bytes:
+                image_part = types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type=mime_type,
+                )
+
+                contents.append(image_part)
+
+            contents.append(prompt)
+
             response = client.models.generate_content(
                 model=model_name,
                 contents=contents,
@@ -942,64 +577,37 @@ def call_gemini(
 
             if not text:
                 raise RuntimeError(
-                    "Gemini 回傳成功，"
-                    "但沒有文字內容。"
+                    "Gemini 回傳成功，但沒有文字內容。"
                 )
 
-            st.session_state.gemini_model = (
-                clean_model_name(model_name)
-            )
+            st.session_state.gemini_model = model_name
 
-            return text
+            return str(text)
 
         except Exception as error:
             error_text = str(error)
+            lower = error_text.lower()
 
             errors.append(
                 f"{model_name}: {error_text}"
             )
-
-            lower = error_text.lower()
-
-            # -------------------------------------------------
-            # 404 / 模型不存在：
-            # 繼續測下一個模型
-            # -------------------------------------------------
 
             is_model_error = (
                 "404" in lower
                 or "not_found" in lower
                 or "not found" in lower
                 or "no longer available" in lower
-                or (
-                    "model" in lower
-                    and "not found" in lower
-                )
             )
 
             if is_model_error:
                 continue
 
-            # -------------------------------------------------
-            # 其他錯誤：
-            # 不要無限換模型。
-            # 例如 API Key 錯誤、403、429 等，
-            # 換模型通常無法解決。
-            # -------------------------------------------------
-
             raise RuntimeError(
-                explain_gemini_error(
-                    error
-                )
+                explain_gemini_error(error)
             )
 
-    # -----------------------------------------------------
-    # 所有模型都失敗
-    # -----------------------------------------------------
-
     raise RuntimeError(
-        "目前 Gemini API 找不到可以成功執行的模型。\n\n"
-        "系統已嘗試目前 API 可見模型與備援模型。\n\n"
+        "目前設定的 Gemini 模型都無法使用。\n\n"
         + "\n\n".join(errors)
     )
 
@@ -1039,19 +647,11 @@ def prepare_image(uploaded_file):
             io.BytesIO(raw_bytes)
         )
 
-        image = ImageOps.exif_transpose(
-            image
-        )
-
+        image = ImageOps.exif_transpose(image)
         image.load()
 
-        if image.mode not in (
-            "RGB",
-            "RGBA",
-        ):
-            image = image.convert(
-                "RGB"
-            )
+        if image.mode not in ("RGB", "RGBA"):
+            image = image.convert("RGB")
 
         image.thumbnail(
             (
@@ -1074,11 +674,8 @@ def prepare_image(uploaded_file):
             )
 
             image = background
-
         else:
-            image = image.convert(
-                "RGB"
-            )
+            image = image.convert("RGB")
 
         buffer = io.BytesIO()
 
@@ -1089,10 +686,7 @@ def prepare_image(uploaded_file):
             optimize=True,
         )
 
-        return (
-            image,
-            buffer.getvalue(),
-        )
+        return image, buffer.getvalue()
 
     except Exception as error:
         raise ValueError(
@@ -1107,7 +701,6 @@ def prepare_image(uploaded_file):
 # =========================================================
 
 JIMENG_25_CORE_RULES = """
-
 【即夢 AI 2.5 商品一致性核心規則】
 
 使用者上傳的商品圖片是主要商品來源。
@@ -1177,7 +770,7 @@ stable framing.
 
 
 # =========================================================
-# Gemini 商品分析 Prompt
+# Gemini Prompt
 # =========================================================
 
 def build_gemini_prompt(
@@ -1185,52 +778,21 @@ def build_gemini_prompt(
     selected_items,
     target_platform,
 ):
-    name = product_data.get(
-        "商品名稱",
-        "",
-    ) or "待確認"
-
-    price = product_data.get(
-        "商品價格",
-        "",
-    ) or "待確認"
-
-    cost = product_data.get(
-        "商品成本",
-        "",
-    ) or "待確認"
-
-    commission = product_data.get(
-        "分潤比例",
-        "",
-    ) or "待確認"
-
-    sales = product_data.get(
-        "月銷量",
-        "",
-    ) or "待確認"
-
-    rating = product_data.get(
-        "商品評分",
-        "",
-    ) or "待確認"
-
-    url = product_data.get(
-        "商品連結",
-        "",
-    ) or "待確認"
-
-    spec = product_data.get(
-        "商品規格",
-        "",
-    ) or "待確認"
+    name = product_data.get("商品名稱") or "待確認"
+    price = product_data.get("商品價格") or "待確認"
+    cost = product_data.get("商品成本") or "待確認"
+    commission = product_data.get("分潤比例") or "待確認"
+    sales = product_data.get("月銷量") or "待確認"
+    rating = product_data.get("商品評分") or "待確認"
+    url = product_data.get("商品連結") or "待確認"
+    spec = product_data.get("商品規格") or "待確認"
 
     selected_text = "、".join(
         selected_items
     )
 
-    prompt = f"""
-你現在是「AI 蝦皮半自動化 2.5 PRO」的 Gemini 商品分析核心。
+    return f"""
+你現在是「AI 蝦皮半自動化 2.5 PRO」Gemini AI 商品分析核心。
 
 你會看到使用者上傳的一張商品圖片。
 
@@ -1292,7 +854,7 @@ Logo、標籤、印刷文字與包裝結構。
 選擇最大、最清楚、最具品牌辨識度的商品作為主商品，
 並明確說明。
 
-6. 不可以假裝自己知道商品的官方資訊。
+6. 不可以假裝知道商品官方資訊。
 
 7. 商品文案必須避免誇大與未確認功效。
 
@@ -1303,7 +865,7 @@ Logo、標籤、印刷文字與包裝結構。
 9. 預設禁止人物、手、模特兒、代言人、
 主持人遮擋商品。
 
-10. 所有正式發布前仍要人工確認。
+10. 正式發布前仍需人工確認。
 
 ==============================
 【輸出格式】
@@ -1320,7 +882,7 @@ Gemini AI 商品分析結果
 
 ## 1｜商品辨識
 
-請列出：
+列出：
 
 - 商品名稱
 - 商品類型
@@ -1331,12 +893,12 @@ Gemini AI 商品分析結果
 - 可確認規格
 - 無法確認資訊
 
-對於無法確認的資料一定寫：
+無法確認資料必須寫：
 「待人工確認」。
 
 ## 2｜AI 選品分析
 
-請分析：
+分析：
 
 - 商品吸引力
 - 內容製作潛力
@@ -1352,7 +914,7 @@ Gemini AI 商品分析結果
 
 ## 3｜蝦皮上架文案
 
-請產生：
+產生：
 
 ### 商品標題 3 組
 
@@ -1374,7 +936,7 @@ Gemini AI 商品分析結果
 
 ## 4｜TikTok 文案
 
-請產生：
+產生：
 
 ### 3 秒開場
 
@@ -1390,7 +952,7 @@ Gemini AI 商品分析結果
 
 ## 5｜即夢 AI 2.5 生圖 Prompt
 
-請輸出：
+產生：
 
 ### A｜1:1 蝦皮商品主圖
 
@@ -1429,7 +991,7 @@ English Prompt
 
 ## 6｜即夢 AI 2.5 影片 Prompt
 
-請產生 9:16 影片英文 Prompt。
+產生 9:16 影片英文 Prompt。
 
 包含：
 
@@ -1469,7 +1031,7 @@ stable framing.
 
 ## 8｜蝦皮分潤合規檢查
 
-請檢查：
+檢查：
 
 - 商品與圖片是否一致
 - 影片與商品是否一致
@@ -1483,17 +1045,15 @@ stable framing.
 - 是否存在規格誤判
 - 是否存在品牌誤判
 
-請用：
+使用：
 
 ✅ 通過
 ⚠️ 需確認
 ❌ 有問題
 
-三種標記。
-
 ## 9｜最終發布建議
 
-請給：
+給出：
 
 - 是否建議製作
 - 是否建議人工確認
@@ -1507,11 +1067,9 @@ stable framing.
 {JIMENG_25_CORE_RULES}
 """
 
-    return prompt
-
 
 # =========================================================
-# Gemini 完整分析
+# Gemini 商品分析
 # =========================================================
 
 def generate_gemini_ai(
@@ -1530,13 +1088,11 @@ def generate_gemini_ai(
         target_platform,
     )
 
-    result = call_gemini(
+    return call_gemini(
         prompt=prompt,
         image_bytes=image_bytes,
         mime_type="image/jpeg",
     )
-
-    return result
 
 
 # =========================================================
@@ -1558,14 +1114,10 @@ def login_page():
         unsafe_allow_html=True,
     )
 
-    _, center, _ = st.columns(
-        [1, 2, 1]
-    )
+    _, center, _ = st.columns([1, 2, 1])
 
     with center:
-        st.subheader(
-            "🔐 會員登入"
-        )
+        st.subheader("🔐 會員登入")
 
         username = st.text_input(
             "會員帳號",
@@ -1597,32 +1149,26 @@ def login_page():
 
                 if success:
                     st.session_state.logged_in = True
-
                     st.session_state.username = (
                         username.strip().lower()
                     )
-
                     st.session_state.member = result
-
                     st.session_state.page = "main"
 
                     st.rerun()
 
-                else:
-                    messages = {
-                        "expired":
+                messages = {
+                    "expired":
                         "⛔ 會員資格已到期，請聯絡管理員續期。",
-
-                        "disabled":
+                    "disabled":
                         "⛔ 此會員帳號目前已停權。",
-
-                        "invalid_date":
+                    "invalid_date":
                         "⛔ 會員到期日資料錯誤。",
-
-                        "invalid":
+                    "invalid":
                         "❌ 帳號或密碼錯誤。",
-                    }
+                }
 
+                if not success:
                     st.error(
                         messages.get(
                             result,
@@ -1672,14 +1218,10 @@ def register_page():
         unsafe_allow_html=True,
     )
 
-    _, center, _ = st.columns(
-        [1, 2, 1]
-    )
+    _, center, _ = st.columns([1, 2, 1])
 
     with center:
-        st.subheader(
-            "👤 建立會員帳號"
-        )
+        st.subheader("👤 建立會員帳號")
 
         name = st.text_input(
             "姓名 / 暱稱",
@@ -1713,15 +1255,11 @@ def register_page():
             use_container_width=True,
         ):
             username_clean = (
-                username
-                .strip()
-                .lower()
+                username.strip().lower()
             )
 
             email_clean = (
-                email
-                .strip()
-                .lower()
+                email.strip().lower()
             )
 
             if not name.strip():
@@ -1772,11 +1310,8 @@ def register_page():
                         f"會員資格預設 {DEFAULT_MEMBER_DAYS} 天，"
                         "請返回登入。"
                     )
-
                 else:
-                    st.error(
-                        str(result)
-                    )
+                    st.error(str(result))
 
         st.divider()
 
@@ -1789,14 +1324,11 @@ def register_page():
 
 
 # =========================================================
-# 登入判斷
+# 尚未登入
 # =========================================================
 
 if not st.session_state.logged_in:
-    if (
-        st.session_state.page
-        == "register"
-    ):
+    if st.session_state.page == "register":
         register_page()
     else:
         login_page()
@@ -1805,7 +1337,7 @@ if not st.session_state.logged_in:
 
 
 # =========================================================
-# 會員資料
+# 目前會員
 # =========================================================
 
 current_username = st.session_state.get(
@@ -1874,8 +1406,7 @@ try:
     )
 
     remaining_days = (
-        expire_date
-        - date.today()
+        expire_date - date.today()
     ).days
 
 except Exception:
@@ -1887,9 +1418,7 @@ if member_status.lower() != "active":
         "⛔ 此會員帳號目前已停權。"
     )
 
-    if st.button(
-        "🚪 返回登入"
-    ):
+    if st.button("🚪 返回登入"):
         logout()
 
     st.stop()
@@ -1900,9 +1429,7 @@ if remaining_days < 0:
         "⛔ 會員資格已到期。"
     )
 
-    if st.button(
-        "🚪 返回登入"
-    ):
+    if st.button("🚪 返回登入"):
         logout()
 
     st.stop()
@@ -1913,9 +1440,7 @@ if remaining_days < 0:
 # =========================================================
 
 with st.sidebar:
-    st.markdown(
-        "## 👤 會員中心"
-    )
+    st.markdown("## 👤 會員中心")
 
     st.success(
         f"會員：{member_name}"
@@ -1960,14 +1485,11 @@ with st.sidebar:
     st.divider()
 
     if st.session_state.gemini_model:
-        st.success(
-            "🟢 Gemini 已連線"
-        )
-
+        st.success("🟢 Gemini 已連線")
         st.caption(
-            f"模型：{st.session_state.gemini_model}"
+            "模型："
+            f"{st.session_state.gemini_model}"
         )
-
     else:
         st.warning(
             "🟡 Gemini 尚未執行"
@@ -1987,9 +1509,7 @@ with st.sidebar:
 # =========================================================
 
 def admin_panel():
-    st.header(
-        "👑 管理員中心"
-    )
+    st.header("👑 管理員中心")
 
     members = load_members()
 
@@ -1998,40 +1518,13 @@ def admin_panel():
     )
 
     for member in members:
-        mid = member.get(
-            "id",
-            "",
-        )
-
-        username = member.get(
-            "username",
-            "",
-        )
-
-        name = member.get(
-            "name",
-            "",
-        )
-
-        email = member.get(
-            "email",
-            "",
-        )
-
-        role = member.get(
-            "role",
-            "member",
-        )
-
-        status = member.get(
-            "status",
-            "active",
-        )
-
-        expires = member.get(
-            "expires",
-            "",
-        )
+        mid = member.get("id", "")
+        username = member.get("username", "")
+        name = member.get("name", "")
+        email = member.get("email", "")
+        role = member.get("role", "member")
+        status = member.get("status", "active")
+        expires = member.get("expires", "")
 
         with st.expander(
             f"👤 {name}｜{username}"
@@ -2060,4 +1553,634 @@ def admin_panel():
                 "會員狀態",
                 [
                     "active",
-                   
+                    "disabled",
+                ],
+                index=(
+                    0
+                    if status == "active"
+                    else 1
+                ),
+                key=f"status_{mid}",
+            )
+
+            roles = [
+                "member",
+                "vip",
+                "admin",
+            ]
+
+            new_role = st.selectbox(
+                "會員等級",
+                roles,
+                index=(
+                    roles.index(role)
+                    if role in roles
+                    else 0
+                ),
+                key=f"role_{mid}",
+            )
+
+            try:
+                expire_value = date.fromisoformat(
+                    expires
+                )
+            except Exception:
+                expire_value = date.today()
+
+            new_expire = st.date_input(
+                "會員到期日",
+                value=expire_value,
+                key=f"expire_{mid}",
+            )
+
+            c1, c2, c3 = st.columns(3)
+
+            with c1:
+                if st.button(
+                    "💾 儲存",
+                    key=f"save_{mid}",
+                    use_container_width=True,
+                ):
+                    update_member(
+                        mid,
+                        {
+                            "status": new_status,
+                            "role": new_role,
+                            "expires": (
+                                new_expire.isoformat()
+                            ),
+                        },
+                    )
+
+                    st.success("已更新。")
+                    st.rerun()
+
+            with c2:
+                if st.button(
+                    "➕ 延長 30 天",
+                    key=f"extend_{mid}",
+                    use_container_width=True,
+                ):
+                    try:
+                        d = date.fromisoformat(
+                            expires
+                        )
+                    except Exception:
+                        d = date.today()
+
+                    if d < date.today():
+                        d = date.today()
+
+                    new_date = (
+                        d + timedelta(days=30)
+                    )
+
+                    update_member(
+                        mid,
+                        {
+                            "expires":
+                                new_date.isoformat(),
+                            "status":
+                                "active",
+                        },
+                    )
+
+                    st.success(
+                        "已延長至 "
+                        f"{new_date.isoformat()}"
+                    )
+
+                    st.rerun()
+
+            with c3:
+                if username != current_username:
+                    if st.button(
+                        "⛔ 停權",
+                        key=f"disable_{mid}",
+                        use_container_width=True,
+                    ):
+                        update_member(
+                            mid,
+                            {
+                                "status":
+                                    "disabled"
+                            },
+                        )
+
+                        st.warning(
+                            "會員已停權。"
+                        )
+
+                        st.rerun()
+
+
+# =========================================================
+# 主標題
+# =========================================================
+
+st.markdown(
+    '<div class="main-title">'
+    '🛒 AI 蝦皮半自動化 2.5 PRO'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<div class="main-subtitle">'
+    'Gemini 商品辨識｜AI 選品｜蝦皮文案｜'
+    'TikTok｜即夢 AI 2.5｜分潤合規'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+
+# =========================================================
+# 管理員
+# =========================================================
+
+if member_role.lower() == "admin":
+    with st.expander("👑 管理員中心"):
+        admin_panel()
+
+    st.divider()
+
+
+# =========================================================
+# Gemini API 狀態
+# =========================================================
+
+with st.expander(
+    "🤖 Gemini API 狀態"
+):
+    api_key = get_gemini_api_key()
+
+    if genai is None:
+        st.error(
+            "❌ google-genai 尚未安裝。"
+        )
+
+        st.code(
+            "google-genai"
+        )
+
+    elif not api_key:
+        st.error(
+            "❌ 找不到 GEMINI_API_KEY。"
+        )
+
+        st.info(
+            "請在 Streamlit Secrets 設定："
+        )
+
+        st.code(
+            'GEMINI_API_KEY = "你的 Gemini API Key"'
+        )
+
+    else:
+        st.success(
+            "✅ Gemini API Key 已讀取"
+        )
+
+        st.write(
+            "模型優先順序："
+        )
+
+        for index, model in enumerate(
+            GEMINI_MODEL_CANDIDATES,
+            start=1,
+        ):
+            st.write(
+                f"{index}. `{model}`"
+            )
+
+        st.caption(
+            "系統不再固定使用失效的 "
+            "gemini-2.5-flash。"
+        )
+
+
+# =========================================================
+# 上傳圖片
+# =========================================================
+
+st.subheader(
+    "1｜📷 上傳商品圖片"
+)
+
+uploaded_file = st.file_uploader(
+    "請選擇商品圖片",
+    type=[
+        "jpg",
+        "jpeg",
+        "png",
+        "webp",
+    ],
+    accept_multiple_files=False,
+    key="product_image_uploader",
+    help=(
+        "支援 JPG、JPEG、PNG、WEBP。"
+        "建議使用清楚的商品正面照片。"
+    ),
+)
+
+prepared_image = None
+prepared_image_bytes = None
+
+
+if uploaded_file is not None:
+    try:
+        (
+            prepared_image,
+            prepared_image_bytes,
+        ) = prepare_image(
+            uploaded_file
+        )
+
+        st.success(
+            f"✅ 圖片已成功上傳："
+            f"{uploaded_file.name}"
+        )
+
+        st.image(
+            prepared_image,
+            caption=(
+                "Gemini 將使用這張圖片進行商品分析"
+            ),
+            use_container_width=True,
+        )
+
+    except Exception as error:
+        st.error(
+            "❌ 圖片讀取失敗。"
+        )
+
+        st.code(str(error))
+
+
+# =========================================================
+# 商品資料
+# =========================================================
+
+st.subheader(
+    "2｜📦 商品資料"
+)
+
+col1, col2 = st.columns(2)
+
+
+with col1:
+    product_name = st.text_input(
+        "商品名稱",
+        placeholder="不知道可留空",
+        key="product_name",
+    )
+
+    product_price = st.text_input(
+        "商品價格",
+        placeholder="例如：399",
+        key="product_price",
+    )
+
+    product_cost = st.text_input(
+        "商品成本",
+        placeholder="例如：250",
+        key="product_cost",
+    )
+
+    commission_rate = st.text_input(
+        "分潤比例",
+        placeholder="例如：12%",
+        key="commission_rate",
+    )
+
+
+with col2:
+    monthly_sales = st.text_input(
+        "月銷量",
+        placeholder="例如：1500",
+        key="monthly_sales",
+    )
+
+    product_rating = st.text_input(
+        "商品評分",
+        placeholder="例如：4.8",
+        key="product_rating",
+    )
+
+    product_url = st.text_input(
+        "商品連結",
+        placeholder="可留空",
+        key="product_url",
+    )
+
+    product_spec = st.text_area(
+        "商品規格",
+        placeholder="例如：300ml、單瓶、白色",
+        height=130,
+        key="product_spec",
+    )
+
+
+# =========================================================
+# 目標平台
+# =========================================================
+
+st.subheader(
+    "3｜🎯 目標平台"
+)
+
+target_platform = st.radio(
+    "目標平台",
+    [
+        "蝦皮",
+        "TikTok",
+        "蝦皮＋TikTok",
+    ],
+    horizontal=True,
+    key="target_platform",
+)
+
+
+# =========================================================
+# AI 功能
+# =========================================================
+
+st.subheader(
+    "4｜🤖 Gemini AI 功能"
+)
+
+generate_options = [
+    "商品辨識",
+    "AI 選品分析",
+    "蝦皮上架文案",
+    "TikTok 文案",
+    "即夢 AI 2.5 生圖指令",
+    "即夢 AI 2.5 影片指令",
+    "即夢 AI 2.5 爆款帶貨影片",
+    "分潤合規檢查",
+    "完整流程",
+]
+
+selected_items = st.multiselect(
+    "選擇需要的功能",
+    options=generate_options,
+    default=["完整流程"],
+    key="selected_ai_features",
+)
+
+if (
+    "完整流程" in selected_items
+    and len(selected_items) > 1
+):
+    st.info(
+        "ℹ️ 已選擇完整流程，"
+        "Gemini 會一次產生完整分析。"
+    )
+
+
+# =========================================================
+# 啟動 Gemini
+# =========================================================
+
+st.subheader(
+    "5｜🚀 開始 Gemini AI 分析"
+)
+
+if st.button(
+    "🚀 啟動 Gemini AI 蝦皮半自動化 2.5",
+    type="primary",
+    use_container_width=True,
+    key="start_ai_analysis",
+):
+    st.session_state.gemini_error = ""
+
+    if prepared_image_bytes is None:
+        st.error(
+            "❌ 請先上傳商品圖片。"
+        )
+
+    elif not selected_items:
+        st.error(
+            "❌ 請至少選擇一個 AI 功能。"
+        )
+
+    elif not get_gemini_api_key():
+        st.error(
+            "❌ 找不到 GEMINI_API_KEY。"
+        )
+
+        st.code(
+            'GEMINI_API_KEY = "你的 Gemini API Key"'
+        )
+
+    else:
+        product_data = {
+            "商品名稱": product_name,
+            "商品價格": product_price,
+            "商品成本": product_cost,
+            "分潤比例": commission_rate,
+            "月銷量": monthly_sales,
+            "商品評分": product_rating,
+            "商品連結": product_url,
+            "商品規格": product_spec,
+            "目標平台": target_platform,
+        }
+
+        effective_items = (
+            ["完整流程"]
+            if "完整流程" in selected_items
+            else selected_items
+        )
+
+        with st.spinner(
+            "🧠 Gemini 正在讀取商品圖片、"
+            "辨識商品並建立完整電商內容……"
+        ):
+            try:
+                result = generate_gemini_ai(
+                    product_data,
+                    effective_items,
+                    prepared_image_bytes,
+                )
+
+                st.session_state.analysis_result = result
+
+                st.session_state.analysis_mode = (
+                    "Gemini API｜圖片＋文字分析"
+                )
+
+                st.success(
+                    "🎉 Gemini AI 分析完成！"
+                )
+
+                if st.session_state.gemini_model:
+                    st.info(
+                        "🤖 實際使用模型："
+                        f"{st.session_state.gemini_model}"
+                    )
+
+            except Exception as error:
+                error_message = str(error)
+
+                st.session_state.gemini_error = (
+                    error_message
+                )
+
+                st.session_state.analysis_result = ""
+
+                st.error(
+                    "❌ Gemini API 呼叫失敗。"
+                )
+
+                st.code(
+                    error_message
+                )
+
+
+# =========================================================
+# Gemini 錯誤
+# =========================================================
+
+if st.session_state.gemini_error:
+    with st.expander(
+        "🔎 Gemini 錯誤詳細資訊",
+        expanded=True,
+    ):
+        st.code(
+            st.session_state.gemini_error
+        )
+
+
+# =========================================================
+# AI 結果
+# =========================================================
+
+if st.session_state.analysis_result:
+    st.divider()
+
+    st.subheader(
+        "6｜📊 Gemini AI 分析結果"
+    )
+
+    st.caption(
+        "模式："
+        f"{st.session_state.analysis_mode}"
+    )
+
+    if st.session_state.gemini_model:
+        st.success(
+            "🤖 Gemini 模型："
+            f"{st.session_state.gemini_model}"
+        )
+
+    st.markdown(
+        '<div class="result-box">',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        st.session_state.analysis_result
+    )
+
+    st.markdown(
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.subheader(
+        "7｜📋 完整結果"
+    )
+
+    st.text_area(
+        "完整 Gemini AI 結果",
+        value=st.session_state.analysis_result,
+        height=700,
+        key="full_ai_result",
+    )
+
+    current_time = datetime.now().strftime(
+        "%Y%m%d_%H%M%S"
+    )
+
+    safe_product_name = (
+        product_name.strip()
+        if product_name.strip()
+        else "商品分析"
+    )
+
+    safe_product_name = re.sub(
+        r'[\\/:*?"<>|]+',
+        "_",
+        safe_product_name,
+    )
+
+    file_name = (
+        "AI蝦皮半自動化2.5_Gemini_"
+        f"{safe_product_name}_"
+        f"{current_time}.txt"
+    )
+
+    st.download_button(
+        "⬇️ 下載完整 Gemini AI 結果",
+        data=(
+            st.session_state.analysis_result
+            .encode("utf-8")
+        ),
+        file_name=file_name,
+        mime="text/plain",
+        use_container_width=True,
+        key="download_ai_result",
+    )
+
+    st.warning(
+        "正式發布前，請人工確認："
+        "商品名稱、品牌、容量、產地、"
+        "成分、保存期限、貨源、售價、"
+        "庫存、組合數、商品規格及分潤資格。"
+    )
+
+
+# =========================================================
+# 系統設定
+# =========================================================
+
+with st.expander(
+    "⚙️ 系統設定"
+):
+    st.success("✅ 本機會員系統")
+    st.success("✅ members.json")
+    st.success("✅ Gemini API")
+    st.success("✅ Gemini 商品圖片辨識")
+    st.success("✅ Gemini 商品分析")
+    st.success("✅ Gemini 蝦皮文案")
+    st.success("✅ Gemini TikTok 文案")
+    st.success("✅ Gemini 即夢 AI 2.5 Prompt")
+    st.success("✅ Gemini 爆款帶貨影片 Prompt")
+    st.success("✅ 即夢 AI 2.5 商品一致性規則")
+
+    st.info(
+        "目前系統使用 Gemini API 真正分析商品圖片，"
+        "不再使用原本的本機規則假 AI 模式。"
+    )
+
+    st.info(
+        "目前模型優先順序："
+        "gemini-3.5-flash → "
+        "gemini-3.1-flash-lite → "
+        "gemini-2.5-flash-lite"
+    )
+
+
+# =========================================================
+# 頁尾
+# =========================================================
+
+st.divider()
+
+st.caption(
+    "AI 蝦皮半自動化 2.5 PRO｜"
+    "Gemini AI｜"
+    "商品圖片辨識｜"
+    "即夢 AI 2.5 Prompt｜"
+    "正式發布前必須人工確認。"
+)
