@@ -15,38 +15,38 @@ from PIL import Image, ImageOps
 
 # =========================================================
 # AI 蝦皮半自動化 2.5 PRO
-# OpenClaw 多 Provider 控制版
+# OpenClaw 龍蝦整合版
 #
-# 純 Streamlit
-# 不需要 Gemini
-# 不需要 Supabase
-# 不需要 LINE API
-# 不需要 WeChat API
+# 完整穩定版
 #
 # 功能：
-# 1. 永久會員
-# 2. 登入 / 註冊
-# 3. 管理員
-# 4. 首頁
+# 1. 會員註冊
+# 2. 會員登入
+# 3. 永久會員
+# 4. 管理員
 # 5. 商品圖片上傳
-# 6. 商品分析
-# 7. 蝦皮文案
-# 8. TikTok 文案
-# 9. 即夢 AI 2.5 生圖 Prompt
-# 10. 即夢 AI 2.5 影片 Prompt
-# 11. OpenClaw Gateway
+# 6. 商品資料
+# 7. 商品分析
+# 8. 蝦皮文案
+# 9. TikTok 文案
+# 10. 即夢 AI 2.5 生圖 Prompt
+# 11. 即夢 AI 2.5 影片 Prompt
 # 12. 真生成影片中心
-# 13. 影片上傳 / 播放 / 下載
-# 14. 手機版
+# 13. OpenClaw Gateway
+# 14. OpenClaw video_generate
+# 15. 影片上傳播放
+# 16. MP4 / MOV / WEBM
+# 17. 重新整理後安全回到首頁
 #
 # 重要：
-# OpenClaw 是控制層。
-# 真正影片生成仍然需要 OpenClaw 後端有可用 Provider。
+# OpenClaw 只是控制層。
+# 真正影片生成需要你自己的影片 Provider。
+# 沒有 OpenClaw 時，商品分析與 Prompt 功能仍可使用。
 # =========================================================
 
 
 # =========================================================
-# Streamlit 頁面
+# Streamlit 設定
 # =========================================================
 
 st.set_page_config(
@@ -57,16 +57,10 @@ st.set_page_config(
 )
 
 
-# =========================================================
-# 全域設定
-# =========================================================
-
 APP_NAME = "AI 蝦皮半自動化 2.5 PRO"
 
 DATA_DIR = Path("data")
 MEMBERS_FILE = DATA_DIR / "members.json"
-
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_IMAGE_SIZE = 1600
 MAX_IMAGE_MB = 20
@@ -74,6 +68,7 @@ MAX_VIDEO_MB = 300
 
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "admin123"
+
 
 VIDEO_MIME_MAP = {
     ".mp4": "video/mp4",
@@ -83,162 +78,146 @@ VIDEO_MIME_MAP = {
 
 
 # =========================================================
+# 建立資料夾
+# =========================================================
+
+DATA_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+
+# =========================================================
 # CSS
 # =========================================================
 
 st.markdown(
     """
-<style>
-
-.block-container {
-    padding-top: 4rem !important;
-    padding-bottom: 3rem !important;
-    padding-left: 1.5rem !important;
-    padding-right: 1.5rem !important;
-}
-
-.main-title {
-    text-align: center;
-    font-size: 38px;
-    font-weight: 900;
-    line-height: 1.3;
-    margin: 10px 0 10px 0;
-    word-break: break-word;
-}
-
-.main-subtitle {
-    text-align: center;
-    font-size: 16px;
-    opacity: 0.75;
-    margin-bottom: 25px;
-    line-height: 1.5;
-}
-
-.section-title {
-    font-size: 28px;
-    font-weight: 800;
-    margin-top: 10px;
-    margin-bottom: 12px;
-}
-
-.card {
-    border: 1px solid rgba(128,128,128,.25);
-    border-radius: 16px;
-    padding: 18px;
-    margin-bottom: 16px;
-}
-
-.small-note {
-    opacity: .7;
-    font-size: 13px;
-}
-
-div.stButton > button {
-    min-height: 44px;
-    border-radius: 10px;
-    font-weight: 600;
-}
-
-div[data-testid="stDownloadButton"] button {
-    min-height: 44px;
-    border-radius: 10px;
-}
-
-@media (max-width: 768px) {
+    <style>
 
     .block-container {
-        padding-top: 3.2rem !important;
-        padding-left: 0.9rem !important;
-        padding-right: 0.9rem !important;
+        padding-top: 3.5rem;
+        padding-bottom: 3rem;
+        padding-left: 1rem;
+        padding-right: 1rem;
     }
 
     .main-title {
-        font-size: 27px;
+        text-align: center;
+        font-size: 36px;
+        font-weight: 900;
+        line-height: 1.3;
+        margin-top: 10px;
+        margin-bottom: 10px;
     }
 
     .main-subtitle {
-        font-size: 14px;
+        text-align: center;
+        font-size: 16px;
+        opacity: 0.75;
+        margin-bottom: 25px;
     }
 
     .section-title {
-        font-size: 23px;
-    }
-}
-
-@media (max-width: 480px) {
-
-    .block-container {
-        padding-top: 2.8rem !important;
-        padding-left: 0.7rem !important;
-        padding-right: 0.7rem !important;
+        font-size: 28px;
+        font-weight: 800;
+        margin-top: 10px;
+        margin-bottom: 15px;
     }
 
-    .main-title {
-        font-size: 24px;
+    div.stButton > button {
+        min-height: 44px;
+        border-radius: 10px;
     }
 
-}
+    div[data-testid="stDownloadButton"] button {
+        min-height: 44px;
+        border-radius: 10px;
+    }
 
-</style>
-""",
+    @media (max-width: 768px) {
+
+        .block-container {
+            padding-top: 3rem;
+            padding-left: 0.8rem;
+            padding-right: 0.8rem;
+        }
+
+        .main-title {
+            font-size: 27px;
+        }
+
+        .main-subtitle {
+            font-size: 14px;
+        }
+
+        .section-title {
+            font-size: 23px;
+        }
+
+    }
+
+    </style>
+    """,
     unsafe_allow_html=True,
 )
 
 
 # =========================================================
 # Session 初始化
+#
+# 這裡是修正「重新整理後首頁沒有出現」的核心。
+# 不直接相信舊 page。
+# 所有 key 都先建立。
 # =========================================================
 
-def initialize_session():
-    defaults = {
-        "logged_in": False,
-        "page": "home",
-        "username": "",
-        "member": {},
+DEFAULT_SESSION = {
+    "logged_in": False,
+    "page": "login",
+    "username": "",
+    "member": {},
 
-        "analysis_result": "",
-        "generated_copy": "",
-        "tiktok_copy": "",
-        "jimeng_image_prompt": "",
-        "jimeng_video_prompt": "",
-        "compliance_result": "",
+    "analysis_result": "",
+    "generated_copy": "",
+    "tiktok_copy": "",
+    "jimeng_image_prompt": "",
+    "jimeng_video_prompt": "",
+    "compliance_result": "",
 
-        "video_product_name": "",
-        "video_product_spec": "",
-        "video_target_platform": "蝦皮＋TikTok",
-        "video_duration": 10,
-        "video_image_bytes": None,
+    "video_product_name": "",
+    "video_product_spec": "",
+    "video_target_platform": "TikTok",
+    "video_duration": 10,
+    "video_image_bytes": None,
 
-        "video_task_id": "",
-        "video_status": "",
-        "video_url": "",
-        "video_bytes": None,
-        "video_name": "",
-        "video_mime": "video/mp4",
+    "video_task_id": "",
+    "video_status": "",
+    "video_url": "",
+    "video_bytes": None,
+    "video_name": "",
+    "video_mime": "video/mp4",
 
-        "uploaded_video_bytes": None,
-        "uploaded_video_name": "",
-        "uploaded_video_mime": "video/mp4",
+    "uploaded_video_bytes": None,
+    "uploaded_video_name": "",
+    "uploaded_video_mime": "video/mp4",
 
-        "openclaw_status": "",
-        "openclaw_last_response": "",
-
-        "login_username": "",
-        "login_password": "",
-
-        "register_name": "",
-        "register_username": "",
-        "register_email": "",
-        "register_password": "",
-        "register_password2": "",
-    }
-
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
+    "openclaw_status": "",
+    "openclaw_last_response": "",
+}
 
 
-initialize_session()
+for session_key, default_value in DEFAULT_SESSION.items():
+
+    if session_key not in st.session_state:
+        st.session_state[session_key] = default_value
+
+
+# =========================================================
+# 工具：安全取得 Session 值
+# =========================================================
+
+def session_get(key, default=""):
+    return st.session_state.get(key, default)
 
 
 # =========================================================
@@ -246,11 +225,18 @@ initialize_session()
 # =========================================================
 
 def load_members():
+
     if not MEMBERS_FILE.exists():
         return []
 
     try:
-        with open(MEMBERS_FILE, "r", encoding="utf-8") as file:
+
+        with open(
+            MEMBERS_FILE,
+            "r",
+            encoding="utf-8",
+        ) as file:
+
             data = json.load(file)
 
         if isinstance(data, list):
@@ -263,13 +249,18 @@ def load_members():
 
 
 def save_members(members):
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    DATA_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     with open(
         MEMBERS_FILE,
         "w",
         encoding="utf-8",
     ) as file:
+
         json.dump(
             members,
             file,
@@ -283,21 +274,34 @@ def save_members(members):
 # =========================================================
 
 def hash_password(password):
+
     salt = secrets.token_hex(16)
 
     digest = hashlib.sha256(
-        (salt + str(password)).encode("utf-8")
+        (
+            salt + str(password)
+        ).encode("utf-8")
     ).hexdigest()
 
-    return f"{salt}${digest}"
+    return salt + "$" + digest
 
 
-def verify_password(password, saved_value):
+def verify_password(
+    password,
+    saved_value,
+):
+
     try:
-        salt, saved_hash = saved_value.split("$", 1)
+
+        salt, saved_hash = saved_value.split(
+            "$",
+            1,
+        )
 
         digest = hashlib.sha256(
-            (salt + str(password)).encode("utf-8")
+            (
+                salt + str(password)
+            ).encode("utf-8")
         ).hexdigest()
 
         return secrets.compare_digest(
@@ -306,35 +310,47 @@ def verify_password(password, saved_value):
         )
 
     except Exception:
+
         return False
 
 
 # =========================================================
-# 管理員
+# 建立管理員
 # =========================================================
 
 def ensure_admin():
+
     members = load_members()
 
     for member in members:
-        if member.get("username") == ADMIN_USERNAME:
+
+        if (
+            str(
+                member.get(
+                    "username",
+                    "",
+                )
+            ).lower()
+            == ADMIN_USERNAME
+        ):
+
             return
 
-    members.append(
-        {
-            "id": secrets.token_hex(8),
-            "username": ADMIN_USERNAME,
-            "password_hash": hash_password(
-                ADMIN_PASSWORD
-            ),
-            "name": "系統管理員",
-            "email": "",
-            "role": "admin",
-            "status": "active",
-            "permanent": True,
-            "created_at": datetime.now().isoformat(),
-        }
-    )
+    admin = {
+        "id": secrets.token_hex(8),
+        "username": ADMIN_USERNAME,
+        "password_hash": hash_password(
+            ADMIN_PASSWORD
+        ),
+        "name": "系統管理員",
+        "email": "",
+        "role": "admin",
+        "status": "active",
+        "permanent": True,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    members.append(admin)
 
     save_members(members)
 
@@ -343,19 +359,32 @@ ensure_admin()
 
 
 # =========================================================
-# 會員搜尋
+# 會員查詢
 # =========================================================
 
 def find_member(username):
-    username = str(username).strip().lower()
+
+    username = (
+        str(username)
+        .strip()
+        .lower()
+    )
 
     if not username:
         return None
 
     for member in load_members():
-        saved_username = str(
-            member.get("username", "")
-        ).strip().lower()
+
+        saved_username = (
+            str(
+                member.get(
+                    "username",
+                    "",
+                )
+            )
+            .strip()
+            .lower()
+        )
 
         if saved_username == username:
             return member
@@ -364,15 +393,28 @@ def find_member(username):
 
 
 def find_member_by_email(email):
-    email = str(email).strip().lower()
+
+    email = (
+        str(email)
+        .strip()
+        .lower()
+    )
 
     if not email:
         return None
 
     for member in load_members():
-        saved_email = str(
-            member.get("email", "")
-        ).strip().lower()
+
+        saved_email = (
+            str(
+                member.get(
+                    "email",
+                    "",
+                )
+            )
+            .strip()
+            .lower()
+        )
 
         if saved_email == email:
             return member
@@ -390,31 +432,40 @@ def create_member(
     name,
     email,
 ):
-    username = str(username).strip().lower()
+
+    username = (
+        str(username)
+        .strip()
+        .lower()
+    )
+
     password = str(password)
+
     name = str(name).strip()
-    email = str(email).strip().lower()
+
+    email = (
+        str(email)
+        .strip()
+        .lower()
+    )
 
     if not username:
-        return False, "請輸入會員帳號。"
+        return False, "請輸入帳號。"
 
     if len(username) < 3:
-        return False, "會員帳號至少 3 個字元。"
-
-    if not re.match(r"^[a-zA-Z0-9_.-]+$", username):
-        return False, "帳號只能使用英文、數字、底線、句點或連字號。"
+        return False, "帳號至少需要 3 個字元。"
 
     if not password:
         return False, "請輸入密碼。"
 
     if len(password) < 4:
-        return False, "密碼至少 4 個字元。"
+        return False, "密碼至少需要 4 個字元。"
 
     if find_member(username):
         return False, "帳號已存在。"
 
     if email and find_member_by_email(email):
-        return False, "Email 已經註冊。"
+        return False, "Email 已註冊。"
 
     member = {
         "id": secrets.token_hex(8),
@@ -429,7 +480,9 @@ def create_member(
     }
 
     members = load_members()
+
     members.append(member)
+
     save_members(members)
 
     return True, member
@@ -439,13 +492,21 @@ def create_member(
 # 更新會員
 # =========================================================
 
-def update_member(member_id, updates):
+def update_member(
+    member_id,
+    updates,
+):
+
     members = load_members()
 
     for member in members:
+
         if member.get("id") == member_id:
+
             member.update(updates)
+
             save_members(members)
+
             return True
 
     return False
@@ -455,26 +516,37 @@ def update_member(member_id, updates):
 # 登入
 # =========================================================
 
-def check_login(username, password):
+def check_login(
+    username,
+    password,
+):
+
     member = find_member(username)
 
     if not member:
         return False, "invalid"
 
-    status = str(
-        member.get("status", "active")
-    ).lower()
-
-    if status != "active":
+    if (
+        str(
+            member.get(
+                "status",
+                "active",
+            )
+        ).lower()
+        != "active"
+    ):
         return False, "disabled"
 
-    saved_password = str(
-        member.get("password_hash", "")
+    saved_hash = str(
+        member.get(
+            "password_hash",
+            "",
+        )
     )
 
     if not verify_password(
         password,
-        saved_password,
+        saved_hash,
     ):
         return False, "invalid"
 
@@ -486,15 +558,559 @@ def check_login(username, password):
 # =========================================================
 
 def logout():
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
 
-    initialize_session()
+    for key, default_value in DEFAULT_SESSION.items():
+        st.session_state[key] = default_value
+
+    st.session_state.page = "login"
 
     st.rerun()
 
 
 # =========================================================
+# 頁面切換
+# =========================================================
+
+def go_page(page_name):
+
+    st.session_state.page = page_name
+
+    st.rerun()
+
+
+# =========================================================
+# Settings / Secrets
+# =========================================================
+
+def get_setting(name):
+
+    value = ""
+
+    try:
+
+        value = st.secrets.get(
+            name,
+            "",
+        )
+
+    except Exception:
+
+        value = ""
+
+    if not value:
+        value = os.getenv(
+            name,
+            "",
+        )
+
+    return str(value).strip()
+
+
+def get_openclaw_url():
+
+    return get_setting(
+        "OPENCLAW_GATEWAY_URL"
+    ).rstrip("/")
+
+
+def get_openclaw_token():
+
+    return get_setting(
+        "OPENCLAW_GATEWAY_TOKEN"
+    )
+
+
+def openclaw_configured():
+
+    return bool(
+        get_openclaw_url()
+    )
+
+
+# =========================================================
+# OpenClaw Header
+# =========================================================
+
+def openclaw_headers():
+
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    token = get_openclaw_token()
+
+    if token:
+
+        headers["Authorization"] = (
+            "Bearer " + token
+        )
+
+    return headers
+
+
+# =========================================================
+# OpenClaw 呼叫
+# =========================================================
+
+def openclaw_invoke(
+    tool_name,
+    args,
+    timeout=300,
+):
+
+    gateway_url = get_openclaw_url()
+
+    if not gateway_url:
+
+        raise RuntimeError(
+            "尚未設定 OPENCLAW_GATEWAY_URL。"
+        )
+
+    endpoint = (
+        gateway_url
+        + "/tools/invoke"
+    )
+
+    payload = {
+        "tool": tool_name,
+        "args": args,
+    }
+
+    response = requests.post(
+        endpoint,
+        headers=openclaw_headers(),
+        json=payload,
+        timeout=timeout,
+    )
+
+    if response.status_code >= 400:
+
+        raise RuntimeError(
+            "OpenClaw Gateway 呼叫失敗。\n"
+            + "HTTP："
+            + str(response.status_code)
+            + "\n\n"
+            + response.text[:2000]
+        )
+
+    try:
+
+        return response.json()
+
+    except Exception:
+
+        return {
+            "raw": response.text
+        }
+
+
+# =========================================================
+# OpenClaw 狀態
+# =========================================================
+
+def check_openclaw():
+
+    if not get_openclaw_url():
+
+        return {
+            "available": False,
+            "message": "尚未設定 OpenClaw Gateway。",
+        }
+
+    try:
+
+        result = openclaw_invoke(
+            "video_generate",
+            {
+                "action": "list"
+            },
+            timeout=30,
+        )
+
+        return {
+            "available": True,
+            "message": "OpenClaw 已連線。",
+            "data": result,
+        }
+
+    except Exception as error:
+
+        return {
+            "available": False,
+            "message": str(error),
+        }
+
+
+# =========================================================
+# 圖片處理
+# =========================================================
+
+def prepare_image(uploaded_file):
+
+    if uploaded_file is None:
+
+        raise ValueError(
+            "沒有收到圖片。"
+        )
+
+    raw_bytes = uploaded_file.getvalue()
+
+    if not raw_bytes:
+
+        raise ValueError(
+            "圖片檔案是空的。"
+        )
+
+    size_mb = (
+        len(raw_bytes)
+        / 1024
+        / 1024
+    )
+
+    if size_mb > MAX_IMAGE_MB:
+
+        raise ValueError(
+            "圖片大小 "
+            + f"{size_mb:.1f} MB，"
+            + f"超過 {MAX_IMAGE_MB} MB。"
+        )
+
+    try:
+
+        image = Image.open(
+            io.BytesIO(raw_bytes)
+        )
+
+        image = ImageOps.exif_transpose(
+            image
+        )
+
+        image.load()
+
+    except Exception as error:
+
+        raise ValueError(
+            "無法讀取圖片："
+            + str(error)
+        )
+
+    if image.mode not in (
+        "RGB",
+        "RGBA",
+    ):
+
+        image = image.convert("RGB")
+
+    image.thumbnail(
+        (
+            MAX_IMAGE_SIZE,
+            MAX_IMAGE_SIZE,
+        ),
+        Image.Resampling.LANCZOS,
+    )
+
+    if image.mode == "RGBA":
+
+        background = Image.new(
+            "RGB",
+            image.size,
+            "white",
+        )
+
+        background.paste(
+            image,
+            mask=image.getchannel("A"),
+        )
+
+        image = background
+
+    else:
+
+        image = image.convert("RGB")
+
+    buffer = io.BytesIO()
+
+    image.save(
+        buffer,
+        format="JPEG",
+        quality=92,
+        optimize=True,
+    )
+
+    return (
+        image,
+        buffer.getvalue(),
+    )
+
+
+# =========================================================
+# 圖片 Base64
+# =========================================================
+
+def image_to_data_url(image_bytes):
+
+    encoded = base64.b64encode(
+        image_bytes
+    ).decode("utf-8")
+
+    return (
+        "data:image/jpeg;base64,"
+        + encoded
+    )
+
+
+# =========================================================
+# 商品分類
+# =========================================================
+
+def detect_product_category(
+    product_name,
+    product_spec="",
+):
+
+    text = (
+        str(product_name)
+        + " "
+        + str(product_spec)
+    ).lower()
+
+    categories = {
+
+        "保養品": [
+            "保養",
+            "精華",
+            "乳液",
+            "面霜",
+            "化妝水",
+            "洗面",
+            "面膜",
+            "防曬",
+            "serum",
+            "cream",
+            "lotion",
+            "skincare",
+        ],
+
+        "3C": [
+            "手機",
+            "耳機",
+            "充電",
+            "電腦",
+            "鍵盤",
+            "滑鼠",
+            "螢幕",
+            "usb",
+            "bluetooth",
+            "camera",
+            "耳麥",
+            "3c",
+        ],
+
+        "居家": [
+            "家用",
+            "收納",
+            "清潔",
+            "廚房",
+            "杯",
+            "鍋",
+            "床",
+            "居家",
+            "家具",
+            "香氛",
+        ],
+
+        "服飾": [
+            "衣",
+            "褲",
+            "鞋",
+            "襪",
+            "外套",
+            "帽",
+            "包",
+            "服飾",
+            "dress",
+            "shirt",
+            "pants",
+            "shoes",
+        ],
+
+        "食品": [
+            "食品",
+            "零食",
+            "餅乾",
+            "茶",
+            "咖啡",
+            "飲料",
+            "食材",
+            "果乾",
+        ],
+
+        "汽機車": [
+            "汽車",
+            "機車",
+            "車用",
+            "汽配",
+            "機油",
+            "輪胎",
+            "行車記錄器",
+            "car",
+            "motorcycle",
+        ],
+    }
+
+    for category, keywords in categories.items():
+
+        for keyword in keywords:
+
+            if keyword in text:
+                return category
+
+    return "其他"
+
+
+# =========================================================
+# 即夢 / 商品核心規則
+# =========================================================
+
+PRODUCT_RULES = """
+PRODUCT IDENTITY LOCK
+
+Use the supplied product image as the exact visual reference.
+
+Preserve:
+- original brand
+- original package
+- original shape
+- original proportions
+- original colors
+- original materials
+- original logo
+- original label
+- original printed text
+
+Do not redesign the product.
+Do not create another product.
+Do not duplicate the product.
+Do not change package structure.
+Do not change brand.
+Do not change logo.
+Do not change label.
+Do not change product color.
+Do not change product proportions.
+Do not distort the product.
+Do not make the product melt.
+Do not make the product disappear.
+Do not invent product information.
+Do not invent prices.
+Do not invent discounts.
+Do not invent certifications.
+Do not invent medical claims.
+
+DEFAULT SCENE:
+No people.
+No hands.
+No presenter.
+No influencer.
+No model.
+No spokesperson.
+
+STYLE:
+Premium commercial product photography.
+Photorealistic.
+Clean.
+Professional.
+Stable product identity.
+No flicker.
+No warping.
+No text drift.
+No watermark.
+"""
+
+
+# =========================================================
+# 即夢圖片 Prompt
+# =========================================================
+
+def build_image_prompt(
+    product_name,
+    product_spec,
+    target_platform,
+):
+
+    name = (
+        str(product_name).strip()
+        or "the uploaded product"
+    )
+
+    spec = (
+        str(product_spec).strip()
+        or "unknown"
+    )
+
+    platform = (
+        str(target_platform).strip()
+        or "Shopee and TikTok"
+    )
+
+    prompt = f"""
+Create a premium commercial product image.
+
+MAIN PRODUCT:
+{name}
+
+PRODUCT SPECIFICATION:
+{spec}
+
+TARGET PLATFORM:
+{platform}
+
+REFERENCE:
+Use the uploaded product image as the ONLY exact product reference.
+
+PRESERVE:
+Brand, packaging, shape, proportions, color,
+material, logo, label and printed text.
+
+COMPOSITION:
+The product is the clear visual focus.
+Premium commercial photography.
+Clean professional background.
+Natural realistic lighting.
+High-end e-commerce advertising style.
+Photorealistic.
+Sharp details.
+Professional composition.
+
+PEOPLE:
+No people.
+No hands.
+No presenter.
+No influencer.
+No model.
+No spokesperson.
+
+PRODUCT PROTECTION:
+Do not redesign the product.
+Do not change the brand.
+Do not change the package.
+Do not change logo.
+Do not change label.
+Do not change printed text.
+Do not invent specifications.
+Do not invent claims.
+Do not add fake prices.
+Do not add fake discounts.
+Do not add watermark.
+
+TEXT:
+Traditional Chinese only if poster text is necessary.
+
+NEGATIVE PROMPT:
+people, hands, fingers, presenter, influencer, model,
+duplicate product, extra product, wrong product,
+wrong brand, wrong logo, wrong package,
+distorted label, wrong text, unreadable text,
+text drift,=======================================
 # Secrets / Environment
 # =========================================================
 
