@@ -15,53 +15,43 @@ from PIL import Image, ImageOps
 
 # =========================================================
 # AI 蝦皮半自動化 2.5 PRO
-# OpenClaw 半自動化版
+# OpenClaw 龍蝦 + 多 Provider 自動切換版
 #
-# Streamlit
-#   ↓
-# OpenClaw Gateway
-#   ↓
-# OpenClaw 自動管理 Provider
-#   ↓
-# Video Provider
+# Streamlit 手機優化版
 #
-# 本版本：
-# 1. 沒有 OpenClaw 也能開網站
-# 2. 有 OpenClaw Gateway 才啟用真影片
-# 3. 商品圖片可直接從手機上傳
-# 4. 自動產生商品分析
-# 5. 自動產生蝦皮文案
-# 6. 自動產生 TikTok 文案
-# 7. 自動產生 OpenClaw 影片 Prompt
-# 8. Image-to-Video
-# 9. 影片任務查詢
-# 10. 影片播放
-# 11. 影片下載
-# 12. MP4 / MOV / WEBM 上傳
-# 13. 永久會員
-# 14. 管理員
-# 15. 不把 Provider API Key 寫死在程式碼
+# 核心：
+# 1. 沒有 OpenClaw Key / Token 也能開網站
+# 2. 有 OpenClaw Gateway 後自動啟用
+# 3. OpenClaw 負責 video_generate
+# 4. OpenClaw 自動選影片 Provider
+# 5. Provider 失敗可自動 fallback
+# 6. 商品圖片作為 Image-to-Video 參考圖
+# 7. 會員永久期限
+# 8. MP4 / MOV / WEBM
+# 9. Session 防止影片重複處理
+# 10. 手機播放提示
+# 11. Streamlit 重新啟動後頂部標題不被遮住
+# 12. 手機版自動縮小標題
+#
+# 注意：
+# OpenClaw 本身不是免費無限影片額度。
+# 真生成影片仍須至少有一個可用影片 Provider。
 # =========================================================
 
 
 # =========================================================
-# Streamlit 設定
+# 頁面設定
 # =========================================================
 
 st.set_page_config(
     page_title="AI 蝦皮半自動化 2.5 PRO｜OpenClaw",
     page_icon="🦞",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="auto",
 )
 
 
 APP_NAME = "AI 蝦皮半自動化 2.5 PRO"
-
-
-# =========================================================
-# 資料
-# =========================================================
 
 DATA_DIR = Path("data")
 MEMBERS_FILE = DATA_DIR / "members.json"
@@ -73,7 +63,22 @@ DATA_DIR.mkdir(
 
 
 # =========================================================
-# 限制
+# OpenClaw 設定
+# =========================================================
+
+OPENCLAW_URL = os.getenv(
+    "OPENCLAW_GATEWAY_URL",
+    "",
+).strip().rstrip("/")
+
+OPENCLAW_TOKEN = os.getenv(
+    "OPENCLAW_GATEWAY_TOKEN",
+    "",
+).strip()
+
+
+# =========================================================
+# 圖片 / 影片限制
 # =========================================================
 
 MAX_IMAGE_SIZE = 1600
@@ -89,204 +94,239 @@ VIDEO_MIME_MAP = {
 
 
 # =========================================================
-# 管理員
+# 永久會員
 # =========================================================
+
+PERMANENT_MEMBER = True
 
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "admin123"
 
 
 # =========================================================
-# OpenClaw
-# =========================================================
-
-def get_setting(name):
-
-    value = ""
-
-    try:
-        value = st.secrets.get(
-            name,
-            "",
-        )
-    except Exception:
-        value = ""
-
-    if not value:
-        value = os.getenv(
-            name,
-            "",
-        )
-
-    return str(value).strip()
-
-
-def get_openclaw_url():
-
-    return get_setting(
-        "OPENCLAW_GATEWAY_URL"
-    ).rstrip("/")
-
-
-def get_openclaw_token():
-
-    return get_setting(
-        "OPENCLAW_GATEWAY_TOKEN"
-    )
-
-
-def openclaw_is_configured():
-
-    return bool(
-        get_openclaw_url()
-        and get_openclaw_token()
-    )
-
-
-def openclaw_headers():
-
-    token = get_openclaw_token()
-
-    headers = {
-        "Content-Type": "application/json",
-    }
-
-    if token:
-        headers["Authorization"] = (
-            f"Bearer {token}"
-        )
-
-    return headers
-
-
-# =========================================================
 # CSS
+# =========================================================
+#
+# 重要：
+# Streamlit 手機 / 重新啟動後，
+# 最上方標題有時會因為 block-container 的預設 padding
+# 太小而被頂部區域遮住。
+#
+# 這裡直接增加頂部空間。
+# 同時加入手機版 CSS。
 # =========================================================
 
 st.markdown(
     """
-<style>
+    <style>
 
-.block-container {
-    padding-top: 1rem;
-    padding-bottom: 3rem;
-    max-width: 1200px;
-}
+    /* =====================================================
+       Streamlit 主內容區
+       防止重新整理 / 重新啟動後標題貼住最上方
+       ===================================================== */
 
-.main-title {
-    text-align: center;
-    font-size: 38px;
-    font-weight: 900;
-    margin-top: 10px;
-    margin-bottom: 5px;
-}
-
-.main-subtitle {
-    text-align: center;
-    opacity: 0.72;
-    font-size: 16px;
-    margin-bottom: 25px;
-}
-
-.section-title {
-    font-size: 25px;
-    font-weight: 800;
-    margin-top: 20px;
-    margin-bottom: 12px;
-}
-
-.status-card {
-    padding: 18px;
-    border-radius: 15px;
-    border: 1px solid rgba(128,128,128,.25);
-    margin-bottom: 15px;
-}
-
-.small-note {
-    opacity: .7;
-    font-size: 13px;
-}
-
-@media (max-width: 768px) {
-
-    .main-title {
-        font-size: 27px;
+    .block-container {
+        padding-top: 4rem !important;
+        padding-bottom: 3rem !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
     }
 
+
+    /* =====================================================
+       主標題
+       ===================================================== */
+
+    .main-title {
+        text-align: center;
+        font-size: 38px;
+        font-weight: 900;
+
+        margin-top: 10px !important;
+        margin-bottom: 12px !important;
+
+        line-height: 1.25;
+
+        word-break: break-word;
+    }
+
+
+    /* =====================================================
+       副標題
+       ===================================================== */
+
     .main-subtitle {
+        text-align: center;
+
+        font-size: 17px;
+
+        opacity: 0.75;
+
+        margin-bottom: 30px;
+
+        line-height: 1.5;
+
+        word-break: break-word;
+    }
+
+
+    /* =====================================================
+       結果區
+       ===================================================== */
+
+    .result-box {
+        padding: 20px;
+        border-radius: 14px;
+
+        border: 1px solid rgba(128,128,128,.25);
+
+        margin-bottom: 20px;
+    }
+
+
+    /* =====================================================
+       影片標題
+       ===================================================== */
+
+    .video-title {
+        font-size: 28px;
+        font-weight: 800;
+
+        margin-top: 10px;
+        margin-bottom: 10px;
+
+        line-height: 1.3;
+    }
+
+
+    /* =====================================================
+       小提示
+       ===================================================== */
+
+    .small-note {
+        opacity: .75;
         font-size: 14px;
     }
 
-    .section-title {
-        font-size: 21px;
+
+    /* =====================================================
+       Streamlit 按鈕
+       ===================================================== */
+
+    div.stButton > button {
+        min-height: 44px;
+        border-radius: 10px;
     }
 
-}
 
-</style>
-""",
+    /* =====================================================
+       手機版
+       ===================================================== */
+
+    @media (max-width: 768px) {
+
+        .block-container {
+
+            padding-top: 3.5rem !important;
+
+            padding-bottom: 2rem !important;
+
+            padding-left: 1rem !important;
+
+            padding-right: 1rem !important;
+
+        }
+
+
+        .main-title {
+
+            font-size: 28px;
+
+            margin-top: 5px !important;
+
+            margin-bottom: 10px !important;
+
+            line-height: 1.3;
+
+        }
+
+
+        .main-subtitle {
+
+            font-size: 14px;
+
+            margin-bottom: 20px;
+
+            line-height: 1.5;
+
+        }
+
+
+        .video-title {
+
+            font-size: 23px;
+
+            line-height: 1.3;
+
+        }
+
+
+        .result-box {
+
+            padding: 14px;
+
+        }
+
+    }
+
+
+    /* =====================================================
+       更小手機
+       ===================================================== */
+
+    @media (max-width: 480px) {
+
+        .block-container {
+
+            padding-top: 3rem !important;
+
+            padding-left: 0.8rem !important;
+
+            padding-right: 0.8rem !important;
+
+        }
+
+
+        .main-title {
+
+            font-size: 25px;
+
+        }
+
+
+        .main-subtitle {
+
+            font-size: 13px;
+
+        }
+
+
+        .video-title {
+
+            font-size: 21px;
+
+        }
+
+    }
+
+    </style>
+    """,
     unsafe_allow_html=True,
 )
 
 
 # =========================================================
-# Session 初始值
-# =========================================================
-
-DEFAULT_SESSION_VALUES = {
-
-    "logged_in": False,
-
-    "page": "login",
-
-    "username": "",
-
-    "member": {},
-
-    "analysis_result": "",
-
-    "shopee_copy": "",
-
-    "tiktok_copy": "",
-
-    "video_prompt": "",
-
-    "openclaw_last_response": "",
-
-    "video_task_id": "",
-
-    "video_status": "",
-
-    "video_url": "",
-
-    "video_bytes": None,
-
-    "video_name": "",
-
-    "video_mime": "video/mp4",
-
-    "video_signature": "",
-
-    "uploaded_video_bytes": None,
-
-    "uploaded_video_name": "",
-
-    "uploaded_video_mime": "video/mp4",
-
-    "uploaded_video_signature": "",
-
-}
-
-
-for key, value in DEFAULT_SESSION_VALUES.items():
-
-    if key not in st.session_state:
-
-        st.session_state[key] = value
-
-
-# =========================================================
-# 會員資料
+# 會員
 # =========================================================
 
 def load_members():
@@ -359,9 +399,11 @@ def verify_password(
 
     try:
 
-        salt, saved_hash = saved_value.split(
-            "$",
-            1,
+        salt, saved_hash = (
+            saved_value.split(
+                "$",
+                1,
+            )
         )
 
         digest = hashlib.sha256(
@@ -392,32 +434,46 @@ def ensure_admin():
     for member in members:
 
         if (
-            str(
-                member.get(
-                    "username",
-                    "",
-                )
-            ).lower()
+            member.get("username")
             == ADMIN_USERNAME
         ):
 
             return
 
-    members.append(
-        {
-            "id": secrets.token_hex(8),
-            "username": ADMIN_USERNAME,
-            "password_hash": hash_password(
+    admin = {
+
+        "id":
+            secrets.token_hex(8),
+
+        "username":
+            ADMIN_USERNAME,
+
+        "password_hash":
+            hash_password(
                 ADMIN_PASSWORD
             ),
-            "name": "系統管理員",
-            "email": "",
-            "role": "admin",
-            "status": "active",
-            "permanent": True,
-            "created_at": datetime.now().isoformat(),
-        }
-    )
+
+        "name":
+            "系統管理員",
+
+        "email":
+            "",
+
+        "role":
+            "admin",
+
+        "status":
+            "active",
+
+        "permanent":
+            True,
+
+        "created_at":
+            datetime.now().isoformat(),
+
+    }
+
+    members.append(admin)
 
     save_members(members)
 
@@ -483,7 +539,7 @@ def find_member_by_email(email):
 
 
 # =========================================================
-# 建立會員
+# 建立永久會員
 # =========================================================
 
 def create_member(
@@ -507,33 +563,48 @@ def create_member(
 
     if find_member(username):
 
-        return False, "帳號已存在。"
+        return (
+            False,
+            "帳號已存在。",
+        )
 
-    if email and find_member_by_email(email):
+    if email and find_member_by_email(
+        email
+    ):
 
-        return False, "Email 已註冊。"
+        return (
+            False,
+            "Email 已註冊。",
+        )
 
     member = {
 
-        "id": secrets.token_hex(8),
+        "id":
+            secrets.token_hex(8),
 
-        "username": username,
+        "username":
+            username,
 
-        "password_hash": hash_password(
-            password
-        ),
+        "password_hash":
+            hash_password(password),
 
-        "name": str(name).strip(),
+        "name":
+            str(name).strip(),
 
-        "email": email,
+        "email":
+            email,
 
-        "role": "member",
+        "role":
+            "member",
 
-        "status": "active",
+        "status":
+            "active",
 
-        "permanent": True,
+        "permanent":
+            True,
 
-        "created_at": datetime.now().isoformat(),
+        "created_at":
+            datetime.now().isoformat(),
 
     }
 
@@ -543,7 +614,10 @@ def create_member(
 
     save_members(members)
 
-    return True, member
+    return (
+        True,
+        member,
+    )
 
 
 # =========================================================
@@ -559,7 +633,10 @@ def update_member(
 
     for member in members:
 
-        if member.get("id") == member_id:
+        if (
+            member.get("id")
+            == member_id
+        ):
 
             member.update(updates)
 
@@ -579,7 +656,9 @@ def check_login(
     password,
 ):
 
-    member = find_member(username)
+    member = find_member(
+        username
+    )
 
     if not member:
         return False, "invalid"
@@ -608,7 +687,88 @@ def check_login(
 
         return False, "invalid"
 
-    return True, member
+    return (
+        True,
+        member,
+    )
+
+
+# =========================================================
+# Session
+# =========================================================
+
+DEFAULT_SESSION_VALUES = {
+
+    "logged_in":
+        False,
+
+    "page":
+        "login",
+
+    "username":
+        "",
+
+    "member":
+        {},
+
+    "analysis_result":
+        "",
+
+    "gemini_error":
+        "",
+
+    "kling_prompt":
+        "",
+
+    "openclaw_status":
+        "",
+
+    "openclaw_last_response":
+        "",
+
+    "video_task_id":
+        "",
+
+    "video_status":
+        "",
+
+    "video_url":
+        "",
+
+    "video_bytes":
+        None,
+
+    "video_name":
+        "",
+
+    "video_mime":
+        "video/mp4",
+
+    "video_signature":
+        "",
+
+    "uploaded_video_bytes":
+        None,
+
+    "uploaded_video_name":
+        "",
+
+    "uploaded_video_mime":
+        "video/mp4",
+
+    "uploaded_video_signature":
+        "",
+
+}
+
+
+for key, value in (
+    DEFAULT_SESSION_VALUES.items()
+):
+
+    if key not in st.session_state:
+
+        st.session_state[key] = value
 
 
 # =========================================================
@@ -617,7 +777,9 @@ def check_login(
 
 def logout():
 
-    for key, value in DEFAULT_SESSION_VALUES.items():
+    for key, value in (
+        DEFAULT_SESSION_VALUES.items()
+    ):
 
         st.session_state[key] = value
 
@@ -625,10 +787,220 @@ def logout():
 
 
 # =========================================================
+# Secrets / Environment
+# =========================================================
+
+def get_setting(name):
+
+    value = ""
+
+    try:
+
+        value = st.secrets.get(
+            name,
+            "",
+        )
+
+    except Exception:
+
+        value = ""
+
+    if not value:
+
+        value = os.getenv(
+            name,
+            "",
+        )
+
+    return str(
+        value
+    ).strip()
+
+
+def get_openclaw_url():
+
+    return get_setting(
+        "OPENCLAW_GATEWAY_URL"
+    ).rstrip("/")
+
+
+def get_openclaw_token():
+
+    return get_setting(
+        "OPENCLAW_GATEWAY_TOKEN"
+    )
+
+
+# =========================================================
+# OpenClaw 是否可用
+# =========================================================
+
+def openclaw_is_configured():
+
+    return bool(
+        get_openclaw_url()
+        and get_openclaw_token()
+    )
+
+
+# =========================================================
+# OpenClaw Header
+# =========================================================
+
+def openclaw_headers():
+
+    token = get_openclaw_token()
+
+    if not token:
+
+        return {
+            "Content-Type":
+                "application/json"
+        }
+
+    return {
+
+        "Content-Type":
+            "application/json",
+
+        "Authorization":
+            f"Bearer {token}",
+
+    }
+
+
+# =========================================================
+# OpenClaw 工具呼叫
+# =========================================================
+
+def openclaw_invoke(
+    tool_name,
+    args,
+    timeout=300,
+):
+
+    gateway_url = (
+        get_openclaw_url()
+    )
+
+    if not gateway_url:
+
+        raise RuntimeError(
+            "尚未設定 "
+            "OPENCLAW_GATEWAY_URL。"
+        )
+
+    url = (
+        gateway_url
+        + "/tools/invoke"
+    )
+
+    payload = {
+
+        "tool":
+            tool_name,
+
+        "args":
+            args,
+
+    }
+
+    response = requests.post(
+
+        url,
+
+        headers=
+            openclaw_headers(),
+
+        json=
+            payload,
+
+        timeout=
+            timeout,
+
+    )
+
+    if response.status_code >= 400:
+
+        raise RuntimeError(
+            "OpenClaw Gateway 呼叫失敗\n\n"
+            f"HTTP：{response.status_code}\n\n"
+            f"{response.text}"
+        )
+
+    try:
+
+        return response.json()
+
+    except Exception:
+
+        return {
+            "raw":
+                response.text
+        }
+
+
+# =========================================================
+# OpenClaw 狀態
+# =========================================================
+
+def check_openclaw():
+
+    if not openclaw_is_configured():
+
+        return {
+            "available":
+                False,
+
+            "message":
+                "尚未設定 OpenClaw Gateway",
+
+        }
+
+    try:
+
+        result = openclaw_invoke(
+            "video_generate",
+            {
+                "action":
+                    "list"
+            },
+            timeout=30,
+        )
+
+        return {
+
+            "available":
+                True,
+
+            "message":
+                "OpenClaw 已連線",
+
+            "data":
+                result,
+
+        }
+
+    except Exception as error:
+
+        return {
+
+            "available":
+                False,
+
+            "message":
+                str(error),
+
+        }
+
+
+# =========================================================
 # 圖片處理
 # =========================================================
 
-def prepare_image(uploaded_file):
+def prepare_image(
+    uploaded_file,
+):
 
     if uploaded_file is None:
 
@@ -636,12 +1008,14 @@ def prepare_image(uploaded_file):
             "沒有收到圖片。"
         )
 
-    raw_bytes = uploaded_file.getvalue()
+    raw_bytes = (
+        uploaded_file.getvalue()
+    )
 
     if not raw_bytes:
 
         raise ValueError(
-            "圖片內容是空的。"
+            "圖片檔案內容是空的。"
         )
 
     size_mb = (
@@ -660,11 +1034,16 @@ def prepare_image(uploaded_file):
     try:
 
         image = Image.open(
-            io.BytesIO(raw_bytes)
+            io.BytesIO(
+                raw_bytes
+            )
         )
 
-        image = ImageOps.exif_transpose(
-            image
+        image = (
+            ImageOps
+            .exif_transpose(
+                image
+            )
         )
 
         image.load()
@@ -680,14 +1059,19 @@ def prepare_image(uploaded_file):
         "RGBA",
     ):
 
-        image = image.convert("RGB")
+        image = image.convert(
+            "RGB"
+        )
 
     image.thumbnail(
+
         (
             MAX_IMAGE_SIZE,
             MAX_IMAGE_SIZE,
         ),
+
         Image.Resampling.LANCZOS,
+
     )
 
     if image.mode == "RGBA":
@@ -699,33 +1083,58 @@ def prepare_image(uploaded_file):
         )
 
         background.paste(
+
             image,
-            mask=image.getchannel("A"),
+
+            mask=
+                image.getchannel(
+                    "A"
+                ),
+
         )
 
         image = background
 
     else:
 
-        image = image.convert("RGB")
+        image = image.convert(
+            "RGB"
+        )
 
     buffer = io.BytesIO()
 
     image.save(
+
         buffer,
+
         format="JPEG",
+
         quality=92,
+
         optimize=True,
+
     )
 
-    return image, buffer.getvalue()
+    return (
+        image,
+        buffer.getvalue(),
+    )
 
 
-def image_to_data_url(image_bytes):
+# =========================================================
+# Base64 圖片
+# =========================================================
 
-    encoded = base64.b64encode(
-        image_bytes
-    ).decode("utf-8")
+def image_to_data_url(
+    image_bytes,
+):
+
+    encoded = (
+        base64.b64encode(
+            image_bytes
+        )
+        .decode("utf-8")
+    )
 
     return (
         "data:image/jpeg;base64,"
@@ -734,445 +1143,61 @@ def image_to_data_url(image_bytes):
 
 
 # =========================================================
-# 商品分類
-# =========================================================
-
-def detect_product_category(
-    product_name,
-    product_spec,
-):
-
-    text = (
-        f"{product_name} "
-        f"{product_spec}"
-    ).lower()
-
-    categories = {
-
-        "保養品": [
-            "保養",
-            "精華",
-            "乳液",
-            "面膜",
-            "洗面",
-            "化妝水",
-            "防曬",
-        ],
-
-        "3C": [
-            "手機",
-            "耳機",
-            "充電",
-            "鍵盤",
-            "滑鼠",
-            "電腦",
-            "平板",
-            "3c",
-        ],
-
-        "居家": [
-            "家用",
-            "收納",
-            "清潔",
-            "廚房",
-            "杯",
-            "鍋",
-            "居家",
-        ],
-
-        "服飾": [
-            "衣",
-            "褲",
-            "鞋",
-            "包",
-            "外套",
-            "帽",
-            "服飾",
-        ],
-
-        "食品": [
-            "食品",
-            "零食",
-            "餅乾",
-            "茶",
-            "咖啡",
-            "飲料",
-        ],
-
-        "汽機車": [
-            "汽車",
-            "機車",
-            "車用",
-            "汽機車",
-        ],
-
-    }
-
-    for category, words in categories.items():
-
-        for word in words:
-
-            if word.lower() in text:
-
-                return category
-
-    return "其他"
-
-
-# =========================================================
-# 商品分析
-# =========================================================
-
-def analyze_product(
-    product_name,
-    product_price,
-    product_cost,
-    commission_rate,
-    monthly_sales,
-    product_rating,
-    product_spec,
-    target_platform,
-):
-
-    category = detect_product_category(
-        product_name,
-        product_spec,
-    )
-
-    name = (
-        product_name.strip()
-        or "待確認商品"
-    )
-
-    price = (
-        product_price.strip()
-        or "待確認"
-    )
-
-    cost = (
-        product_cost.strip()
-        or "待確認"
-    )
-
-    commission = (
-        commission_rate.strip()
-        or "待確認"
-    )
-
-    sales = (
-        monthly_sales.strip()
-        or "待確認"
-    )
-
-    rating = (
-        product_rating.strip()
-        or "待確認"
-    )
-
-    spec = (
-        product_spec.strip()
-        or "待確認"
-    )
-
-    return f"""
-【AI 商品分析】
-
-商品名稱：
-{name}
-
-商品分類：
-{category}
-
-商品價格：
-{price}
-
-商品成本：
-{cost}
-
-分潤比例：
-{commission}
-
-月銷量：
-{sales}
-
-商品評分：
-{rating}
-
-商品規格：
-{spec}
-
-目標平台：
-{target_platform}
-
-【選品分析】
-
-1. 商品定位：
-以「{category}」類商品方向進行分析。
-
-2. 商業素材：
-建議使用商品原圖作為主要視覺素材，
-避免自行改變品牌、包裝、Logo、顏色與產品結構。
-
-3. 影片方向：
-以商品本體展示、細節特寫、材質展示、
-包裝展示與乾淨商業攝影為主。
-
-4. 蝦皮方向：
-標題應包含商品核心名稱與主要用途，
-避免沒有依據的誇張宣稱。
-
-5. TikTok方向：
-前 2～3 秒先展示商品，
-接著展示細節，
-最後回到商品完整畫面。
-
-6. 風險提醒：
-價格、規格、庫存、優惠、認證、
-功效與分潤資訊都必須人工確認。
-
-【AI 保護規則】
-
-不可自行發明：
-- 品牌
-- 規格
-- 價格
-- 折扣
-- 贈品
-- 認證
-- 功效
-- 材質
-- 數據
-
-未知資訊一律標記：
-「待確認」。
-"""
-
-
-# =========================================================
-# 蝦皮文案
-# =========================================================
-
-def generate_shopee_copy(
-    product_name,
-    product_price,
-    product_spec,
-    target_platform,
-):
-
-    name = (
-        product_name.strip()
-        or "商品名稱待確認"
-    )
-
-    price = (
-        product_price.strip()
-        or "待確認"
-    )
-
-    spec = (
-        product_spec.strip()
-        or "待確認"
-    )
-
-    return f"""
-【蝦皮商品標題】
-
-{name}｜實用商品｜日常使用｜品質選物
-
-
-【商品賣點】
-
-① 商品名稱：
-{name}
-
-② 商品資訊：
-{spec}
-
-③ 商品價格：
-{price}
-
-④ 適用平台：
-{target_platform}
-
-
-【商品介紹】
-
-這款商品適合需要
-「{name}」
-的消費者。
-
-商品資訊與規格請依實際商品確認。
-
-建議購買前確認：
-
-・商品規格
-・尺寸
-・顏色
-・數量
-・庫存
-・配送方式
-
-
-【購買提醒】
-
-實際商品以收到的商品為準。
-
-請確認商品規格與圖片資訊後再下單。
-
-
-【蝦皮標籤】
-
-#蝦皮購物
-#{name}
-#生活好物
-#實用商品
-#熱門商品
-"""
-
-
-# =========================================================
-# TikTok 文案
-# =========================================================
-
-def generate_tiktok_copy(
-    product_name,
-    product_spec,
-):
-
-    name = (
-        product_name.strip()
-        or "商品"
-    )
-
-    spec = (
-        product_spec.strip()
-        or "商品規格待確認"
-    )
-
-    return f"""
-【TikTok 短影音文案】
-
-🎬 前 3 秒：
-
-直接展示「{name}」完整商品。
-
-🔥 中段：
-
-快速展示商品外觀、
-材質、包裝與主要細節。
-
-📦 商品資訊：
-
-{name}
-
-{spec}
-
-🎯 結尾：
-
-回到商品完整畫面，
-讓觀眾清楚看到商品本體。
-
-⚠️ 注意：
-
-不可自行加入未確認的價格、
-折扣、贈品、功效或認證。
-
-
-【TikTok Hashtags】
-
-#{name}
-#TikTok購物
-#好物推薦
-#商品分享
-#購物
-#短影音
-"""
-
-
-# =========================================================
-# 分潤合規
-# =========================================================
-
-def commission_check(
-    commission_rate,
-    product_url,
-):
-
-    commission = (
-        commission_rate.strip()
-        or "待確認"
-    )
-
-    url = (
-        product_url.strip()
-        or "待確認"
-    )
-
-    return f"""
-【分潤合規檢查】
-
-分潤比例：
-{commission}
-
-商品連結：
-{url}
-
-請人工確認：
-
-□ 商品確實存在分潤資格
-□ 分潤比例正確
-□ 商品連結正確
-□ 推廣資格正確
-□ 文案沒有誤導消費者
-□ 沒有虛構折扣
-□ 沒有虛構贈品
-□ 沒有虛構認證
-□ 沒有誇大效果
-
-結果：
-
-目前僅能做內容檢查，
-實際分潤資格仍需以平台資料為準。
-"""
-
-
-# =========================================================
-# OpenClaw 影片 Prompt
+# 商品影片 Prompt
 # =========================================================
 
 PRODUCT_RULES = """
+
 PRODUCT IDENTITY LOCK
 
-Use the supplied product image as the primary
-and exact visual reference.
+Use the supplied product image as the main and exact
+visual reference.
 
 Preserve:
 
-original brand,
-original package,
-original shape,
-original proportions,
-original colors,
-original materials,
-original logo,
-original label,
-original printed text.
+- original brand
+- original package
+- original shape
+- original proportions
+- original colors
+- original materials
+- original logo
+- original label
+- original printed text
 
 Do not redesign the product.
+
 Do not create another product.
+
 Do not duplicate the product.
+
 Do not change package structure.
+
 Do not change brand.
+
 Do not change logo.
+
 Do not change label.
+
 Do not change product color.
+
 Do not change product proportions.
+
 Do not distort the product.
 
-No fake claims.
-No fake prices.
-No fake discounts.
-No fake certifications.
+Do not make the product melt.
+
+Do not make the product disappear.
+
+Do not generate fake claims.
+
+Do not generate fake prices.
+
+Do not generate fake discounts.
+
+Do not generate fake certifications.
+
+Default scene:
 
 No people.
 No hands.
@@ -1182,12 +1207,19 @@ No model.
 No spokesperson.
 
 Premium commercial product photography.
+
 Photorealistic.
+
 Smooth cinematic movement.
+
 Stable product identity.
+
 No flicker.
+
 No warping.
+
 No text drift.
+
 No watermark.
 """
 
@@ -1197,97 +1229,72 @@ def build_video_prompt(
     product_spec,
     target_platform,
     duration,
-    ratio,
 ):
 
-    name = (
+    product_name = (
         product_name.strip()
-        or "the uploaded product"
+        if product_name
+        else "the uploaded product"
     )
 
-    spec = (
+    product_spec = (
         product_spec.strip()
-        or "unknown"
+        if product_spec
+        else "unknown"
     )
-
-    if ratio == "9:16":
-        format_text = (
-            "Vertical 9:16 social commerce video."
-        )
-
-    elif ratio == "16:9":
-        format_text = (
-            "Horizontal 16:9 commercial video."
-        )
-
-    else:
-        format_text = (
-            "Square 1:1 commercial video."
-        )
 
     return f"""
 Create a premium commercial product advertisement.
 
 PRODUCT:
-{name}
+{product_name}
 
 SPECIFICATION:
-{spec}
+{product_spec}
 
-TARGET PLATFORM:
+TARGET:
 {target_platform}
 
 DURATION:
 {duration} seconds.
 
 FORMAT:
-{format_text}
+Vertical 9:16 social commerce video.
 
 Use the supplied product image as the
 primary visual reference.
 
-SCENE 1 — OPENING
+SCENE:
 
 Start with a clean hero shot of the exact
 uploaded product.
 
-Keep the product clearly visible.
+The camera slowly pushes toward the product.
 
-SCENE 2 — PRODUCT DETAIL
+Reveal realistic material details,
+packaging details, logo and label.
 
-Slowly move the camera closer.
+Use subtle cinematic camera movement.
 
-Show realistic:
+Maintain exact product identity throughout.
 
-- packaging
-- material
-- product surface
-- logo
-- label
-- shape
-- proportions
+Finish with a stable premium hero shot.
 
-SCENE 3 — CINEMATIC MOVEMENT
+LIGHTING:
 
-Use subtle camera movement.
+Premium studio lighting.
+Soft realistic highlights.
+Natural shadows.
+Clean commercial environment.
+High-end advertising photography.
 
-Slow push-in.
+CAMERA:
 
-Small cinematic orbit.
-
-Controlled depth of field.
-
+Smooth slow push-in.
+Subtle cinematic orbit.
 Stable framing.
-
+Controlled depth of field.
 No aggressive camera shake.
-
-SCENE 4 — ENDING
-
-Return to a clean hero shot.
-
-Keep the exact product centered.
-
-Hold the final frame.
 
 PRODUCT CONSISTENCY:
 
@@ -1300,7 +1307,7 @@ Same logo.
 Same label.
 Same material.
 
-NEGATIVE PROMPT:
+NEGATIVE:
 
 people,
 hands,
@@ -1340,126 +1347,48 @@ unrealistic product.
 
 
 # =========================================================
-# OpenClaw Gateway
-# =========================================================
-
-def openclaw_invoke(
-    tool_name,
-    args,
-    timeout=300,
-):
-
-    gateway_url = get_openclaw_url()
-
-    if not gateway_url:
-
-        raise RuntimeError(
-            "尚未設定 OPENCLAW_GATEWAY_URL。"
-        )
-
-    url = (
-        gateway_url
-        + "/tools/invoke"
-    )
-
-    payload = {
-
-        "tool": tool_name,
-
-        "args": args,
-
-    }
-
-    try:
-
-        response = requests.post(
-
-            url,
-
-            headers=openclaw_headers(),
-
-            json=payload,
-
-            timeout=timeout,
-
-        )
-
-    except requests.exceptions.Timeout:
-
-        raise RuntimeError(
-            "OpenClaw Gateway 連線逾時。"
-        )
-
-    except requests.exceptions.ConnectionError:
-
-        raise RuntimeError(
-            "無法連接 OpenClaw Gateway。"
-        )
-
-    except Exception as error:
-
-        raise RuntimeError(
-            f"OpenClaw 連線錯誤：{error}"
-        )
-
-    if response.status_code >= 400:
-
-        raise RuntimeError(
-            "OpenClaw Gateway 呼叫失敗\n\n"
-            f"HTTP：{response.status_code}\n\n"
-            f"{response.text[:3000]}"
-        )
-
-    try:
-
-        return response.json()
-
-    except Exception:
-
-        return {
-            "raw": response.text
-        }
-
-
-# =========================================================
-# OpenClaw 影片生成
+# OpenClaw 真影片生成
 # =========================================================
 
 def openclaw_generate_video(
     image_bytes,
     prompt,
     duration,
-    ratio,
     model="",
 ):
 
     if not openclaw_is_configured():
 
         raise RuntimeError(
-            "OpenClaw 尚未設定。"
+            "OpenClaw 尚未設定。\n\n"
+            "網站本身仍可正常使用，"
+            "但目前無法進行真影片生成。"
         )
 
-    image_data_url = image_to_data_url(
-        image_bytes
+    image_data_url = (
+        image_to_data_url(
+            image_bytes
+        )
     )
 
     args = {
 
-        "action": "generate",
+        "action":
+            "generate",
 
-        "prompt": prompt,
+        "prompt":
+            prompt,
 
-        "image": image_data_url,
+        "image":
+            image_data_url,
 
-        "imageRoles": [
-            "first_frame"
-        ],
+        "imageRoles":
+            [
+                "first_frame"
+            ],
 
-        "duration": duration,
-
-        "aspect_ratio": ratio,
-
-        "ratio": ratio,
+        "duration":
+            duration,
 
     }
 
@@ -1489,29 +1418,43 @@ def openclaw_generate_video(
 
 
 # =========================================================
-# 遞迴找 Task ID
+# 遞迴尋找 Task ID
 # =========================================================
 
-def recursive_find_task_id(obj):
+def recursive_find_task_id(
+    obj,
+):
 
     keys = [
 
         "task_id",
+
         "taskId",
+
+        "id",
+
         "job_id",
+
         "jobId",
 
     ]
 
-    if isinstance(obj, dict):
+    if isinstance(
+        obj,
+        dict,
+    ):
 
         for key in keys:
 
-            value = obj.get(key)
+            value = obj.get(
+                key
+            )
 
             if value is not None:
 
-                text = str(value).strip()
+                text = str(
+                    value
+                )
 
                 if text:
 
@@ -1519,20 +1462,27 @@ def recursive_find_task_id(obj):
 
         for value in obj.values():
 
-            result = recursive_find_task_id(
-                value
+            result = (
+                recursive_find_task_id(
+                    value
+                )
             )
 
             if result:
 
                 return result
 
-    elif isinstance(obj, list):
+    elif isinstance(
+        obj,
+        list,
+    ):
 
         for item in obj:
 
-            result = recursive_find_task_id(
-                item
+            result = (
+                recursive_find_task_id(
+                    item
+                )
             )
 
             if result:
@@ -1543,62 +1493,100 @@ def recursive_find_task_id(obj):
 
 
 # =========================================================
-# 找 URL
+# 遞迴找影片 URL
 # =========================================================
 
-def recursive_find_video_url(obj):
+def recursive_find_video_url(
+    obj,
+):
 
-    preferred_keys = [
+    if isinstance(
+        obj,
+        dict,
+    ):
 
-        "video_url",
-        "videoUrl",
-        "download_url",
-        "downloadUrl",
-        "media_url",
-        "mediaUrl",
-        "url",
+        preferred = [
 
-    ]
+            "video_url",
 
-    if isinstance(obj, dict):
+            "videoUrl",
 
-        for key in preferred_keys:
+            "download_url",
 
-            value = obj.get(key)
+            "downloadUrl",
+
+            "media_url",
+
+            "mediaUrl",
+
+        ]
+
+        for key in preferred:
+
+            value = obj.get(
+                key
+            )
 
             if (
-                isinstance(value, str)
-                and value.startswith("http")
+                isinstance(
+                    value,
+                    str,
+                )
+                and value.startswith(
+                    "http"
+                )
             ):
 
-                lower = value.lower()
+                return value
+
+        for key, value in (
+            obj.items()
+        ):
+
+            if (
+                isinstance(
+                    value,
+                    str,
+                )
+                and value.startswith(
+                    "http"
+                )
+            ):
+
+                lower = (
+                    value.lower()
+                )
 
                 if (
-                    "video" in lower
-                    or ".mp4" in lower
-                    or ".mov" in lower
-                    or ".webm" in lower
-                    or "download" in lower
+                    ".mp4" in lower
+                    or "video" in lower
                 ):
 
                     return value
 
         for value in obj.values():
 
-            result = recursive_find_video_url(
-                value
+            result = (
+                recursive_find_video_url(
+                    value
+                )
             )
 
             if result:
 
                 return result
 
-    elif isinstance(obj, list):
+    elif isinstance(
+        obj,
+        list,
+    ):
 
         for item in obj:
 
-            result = recursive_find_video_url(
-                item
+            result = (
+                recursive_find_video_url(
+                    item
+                )
             )
 
             if result:
@@ -1609,16 +1597,21 @@ def recursive_find_video_url(obj):
 
 
 # =========================================================
-# 找狀態
+# 遞迴找狀態
 # =========================================================
 
-def recursive_find_status(obj):
+def recursive_find_status(
+    obj,
+):
 
     keys = [
 
         "status",
+
         "state",
+
         "task_status",
+
         "taskStatus",
 
     ]
@@ -1626,31 +1619,53 @@ def recursive_find_status(obj):
     valid = {
 
         "queued",
+
         "submitted",
+
         "processing",
+
         "running",
+
         "pending",
+
         "succeeded",
+
         "success",
+
         "completed",
+
         "complete",
+
         "failed",
+
         "failure",
+
         "cancelled",
+
         "canceled",
 
     }
 
-    if isinstance(obj, dict):
+    if isinstance(
+        obj,
+        dict,
+    ):
 
         for key in keys:
 
-            value = obj.get(key)
+            value = obj.get(
+                key
+            )
 
-            if isinstance(value, str):
+            if isinstance(
+                value,
+                str,
+            ):
 
                 value = (
-                    value.strip().lower()
+                    value
+                    .strip()
+                    .lower()
                 )
 
                 if value in valid:
@@ -1659,20 +1674,27 @@ def recursive_find_status(obj):
 
         for value in obj.values():
 
-            result = recursive_find_status(
-                value
+            result = (
+                recursive_find_status(
+                    value
+                )
             )
 
             if result:
 
                 return result
 
-    elif isinstance(obj, list):
+    elif isinstance(
+        obj,
+        list,
+    ):
 
         for item in obj:
 
-            result = recursive_find_status(
-                item
+            result = (
+                recursive_find_status(
+                    item
+                )
             )
 
             if result:
@@ -1683,39 +1705,55 @@ def recursive_find_status(obj):
 
 
 # =========================================================
-# 處理 OpenClaw 結果
+# 從 OpenClaw 回應取得影片
 # =========================================================
 
-def process_openclaw_result(result):
+def process_openclaw_video_result(
+    result,
+):
 
-    video_url = recursive_find_video_url(
-        result
+    video_url = (
+        recursive_find_video_url(
+            result
+        )
     )
 
-    task_id = recursive_find_task_id(
-        result
+    if video_url:
+
+        return {
+            "status":
+                "completed",
+
+            "video_url":
+                video_url,
+
+            "raw":
+                result,
+        }
+
+    task_id = (
+        recursive_find_task_id(
+            result
+        )
     )
 
-    status = recursive_find_status(
-        result
+    status = (
+        recursive_find_status(
+            result
+        )
     )
 
     return {
 
-        "video_url": video_url,
-
-        "task_id": task_id,
-
-        "status": (
+        "status":
             status
-            or (
-                "completed"
-                if video_url
-                else "submitted"
-            )
-        ),
+            or "submitted",
 
-        "raw": result,
+        "task_id":
+            task_id,
+
+        "raw":
+            result,
 
     }
 
@@ -1724,25 +1762,26 @@ def process_openclaw_result(result):
 # 下載影片
 # =========================================================
 
-def download_video(video_url):
+def download_video(
+    video_url,
+):
 
-    try:
+    response = requests.get(
 
-        response = requests.get(
-            video_url,
-            timeout=180,
-        )
+        video_url,
 
-    except Exception as error:
+        timeout=180,
 
-        raise RuntimeError(
-            f"影片下載錯誤：{error}"
-        )
+    )
 
     if response.status_code >= 400:
 
         raise RuntimeError(
-            f"影片下載失敗：HTTP {response.status_code}"
+
+            "影片下載失敗。\n\n"
+
+            f"HTTP：{response.status_code}"
+
         )
 
     if not response.content:
@@ -1751,42 +1790,64 @@ def download_video(video_url):
             "影片內容為空。"
         )
 
-    size_mb = (
-        len(response.content)
-        / 1024
-        / 1024
-    )
-
-    if size_mb > MAX_VIDEO_MB:
-
-        raise RuntimeError(
-            f"影片 {size_mb:.1f} MB，"
-            f"超過系統限制。"
-        )
-
     return response.content
 
 
 # =========================================================
-# 儲存完成影片
+# 查詢 OpenClaw video_generate 狀態
 # =========================================================
 
-def save_generated_video(
-    video_url,
-):
+def openclaw_video_status():
 
-    raw = download_video(
-        video_url
+    result = openclaw_invoke(
+
+        "video_generate",
+
+        {
+            "action":
+                "status"
+        },
+
+        timeout=60,
+
     )
 
-    signature = hashlib.sha256(
-        raw
-    ).hexdigest()
+    return result
 
-    if (
-        st.session_state.video_signature
-        == signature
-    ):
+
+# =========================================================
+# 嘗試自動取得影片
+# =========================================================
+
+def try_get_video_from_result(
+    result,
+):
+
+    video_url = (
+        recursive_find_video_url(
+            result
+        )
+    )
+
+    if not video_url:
+
+        return False
+
+    try:
+
+        raw = download_video(
+            video_url
+        )
+
+    except Exception as error:
+
+        st.warning(
+            f"找到影片 URL，但下載失敗：{error}"
+        )
+
+        st.session_state.video_url = (
+            video_url
+        )
 
         return False
 
@@ -1798,16 +1859,16 @@ def save_generated_video(
         raw
     )
 
-    st.session_state.video_signature = (
-        signature
-    )
-
     st.session_state.video_name = (
+
         "OpenClaw_AI_"
+
         + datetime.now().strftime(
             "%Y%m%d_%H%M%S"
         )
+
         + ".mp4"
+
     )
 
     st.session_state.video_mime = (
@@ -1822,7 +1883,7 @@ def save_generated_video(
 
 
 # =========================================================
-# 查詢影片
+# 手動查詢影片
 # =========================================================
 
 def check_video_status():
@@ -1833,26 +1894,8 @@ def check_video_status():
             "OpenClaw 尚未設定。"
         )
 
-    args = {
-
-        "action": "status",
-
-    }
-
-    if st.session_state.video_task_id:
-
-        args["task_id"] = (
-            st.session_state.video_task_id
-        )
-
-    result = openclaw_invoke(
-
-        "video_generate",
-
-        args,
-
-        timeout=60,
-
+    result = (
+        openclaw_video_status()
     )
 
     st.session_state.openclaw_last_response = (
@@ -1863,67 +1906,42 @@ def check_video_status():
         )
     )
 
-    processed = process_openclaw_result(
+    if try_get_video_from_result(
         result
+    ):
+
+        return result
+
+    status = (
+        recursive_find_status(
+            result
+        )
     )
 
-    if processed["task_id"]:
-
-        st.session_state.video_task_id = (
-            processed["task_id"]
-        )
-
-    if processed["video_url"]:
-
-        try:
-
-            save_generated_video(
-                processed["video_url"]
-            )
-
-            return result
-
-        except Exception as error:
-
-            st.warning(
-                "已找到影片，但下載失敗："
-                + str(error)
-            )
-
-            st.session_state.video_url = (
-                processed["video_url"]
-            )
-
     st.session_state.video_status = (
-        processed["status"]
+        status
+        or "processing"
     )
 
     return result
 
 
 # =========================================================
-# 清除影片
+# 清除生成影片
 # =========================================================
 
 def clear_generated_video():
 
     st.session_state.video_task_id = ""
-
     st.session_state.video_status = ""
-
     st.session_state.video_url = ""
-
     st.session_state.video_bytes = None
-
     st.session_state.video_name = ""
-
-    st.session_state.video_mime = "video/mp4"
-
     st.session_state.video_signature = ""
 
 
 # =========================================================
-# 手動影片
+# 影片 MIME
 # =========================================================
 
 def detect_video_mime(
@@ -1937,18 +1955,35 @@ def detect_video_mime(
 
     if ext in VIDEO_MIME_MAP:
 
-        return VIDEO_MIME_MAP[ext], ext
+        return (
+            VIDEO_MIME_MAP[ext],
+            ext,
+        )
 
-    for suffix, mime in VIDEO_MIME_MAP.items():
+    for suffix, mime in (
+        VIDEO_MIME_MAP.items()
+    ):
 
         if mime == browser_mime:
 
-            return mime, suffix
+            return (
+                mime,
+                suffix,
+            )
 
-    return "video/mp4", ".mp4"
+    return (
+        "video/mp4",
+        ".mp4",
+    )
 
 
-def save_uploaded_video(video_file):
+# =========================================================
+# 儲存手動上傳影片
+# =========================================================
+
+def save_uploaded_video(
+    video_file,
+):
 
     raw = video_file.getvalue()
 
@@ -1972,8 +2007,11 @@ def save_uploaded_video(video_file):
         )
 
     mime, ext = detect_video_mime(
+
         video_file.name,
+
         video_file.type or "",
+
     )
 
     signature = hashlib.sha256(
@@ -2001,19 +2039,23 @@ def save_uploaded_video(video_file):
             signature
         )
 
-    return raw, mime, ext, size_mb
+    return (
+        raw,
+        mime,
+        ext,
+        size_mb,
+    )
 
+
+# =========================================================
+# 清除上傳影片
+# =========================================================
 
 def clear_uploaded_video():
 
     st.session_state.uploaded_video_bytes = None
-
     st.session_state.uploaded_video_name = ""
-
-    st.session_state.uploaded_video_mime = (
-        "video/mp4"
-    )
-
+    st.session_state.uploaded_video_mime = "video/mp4"
     st.session_state.uploaded_video_signature = ""
 
 
@@ -2032,7 +2074,7 @@ def login_page():
 
     st.markdown(
         '<div class="main-subtitle">'
-        'OpenClaw 半自動化｜商品分析｜影片生成'
+        'OpenClaw 龍蝦｜多 Provider｜真影片生成'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -2072,9 +2114,11 @@ def login_page():
 
             else:
 
-                success, result = check_login(
-                    username,
-                    password,
+                success, result = (
+                    check_login(
+                        username,
+                        password,
+                    )
                 )
 
                 if success:
@@ -2082,7 +2126,9 @@ def login_page():
                     st.session_state.logged_in = True
 
                     st.session_state.username = (
-                        username.strip().lower()
+                        username
+                        .strip()
+                        .lower()
                     )
 
                     st.session_state.member = result
@@ -2093,17 +2139,22 @@ def login_page():
 
                 else:
 
-                    if result == "disabled":
+                    messages = {
 
-                        st.error(
-                            "⛔ 帳號已停權。"
+                        "disabled":
+                            "⛔ 帳號已停權。",
+
+                        "invalid":
+                            "❌ 帳號或密碼錯誤。",
+
+                    }
+
+                    st.error(
+                        messages.get(
+                            result,
+                            "❌ 登入失敗。",
                         )
-
-                    else:
-
-                        st.error(
-                            "❌ 帳號或密碼錯誤。"
-                        )
+                    )
 
         st.divider()
 
@@ -2112,7 +2163,9 @@ def login_page():
             use_container_width=True,
         ):
 
-            st.session_state.page = "register"
+            st.session_state.page = (
+                "register"
+            )
 
             st.rerun()
 
@@ -2127,7 +2180,7 @@ def login_page():
 
 
 # =========================================================
-# 註冊頁
+# 註冊
 # =========================================================
 
 def register_page():
@@ -2146,7 +2199,7 @@ def register_page():
     with center:
 
         st.success(
-            "♾️ 會員期限：永久"
+            "會員期限：永久"
         )
 
         name = st.text_input(
@@ -2158,8 +2211,7 @@ def register_page():
         )
 
         username = st.text_input(
-            "會員帳號",
-            placeholder="3～30 位小寫英數字或底線",
+            "會員帳號"
         )
 
         password = st.text_input(
@@ -2179,11 +2231,15 @@ def register_page():
         ):
 
             username_clean = (
-                username.strip().lower()
+                username
+                .strip()
+                .lower()
             )
 
             email_clean = (
-                email.strip().lower()
+                email
+                .strip()
+                .lower()
             )
 
             if not name.strip():
@@ -2224,11 +2280,13 @@ def register_page():
 
             else:
 
-                success, result = create_member(
-                    username_clean,
-                    password,
-                    name,
-                    email_clean,
+                success, result = (
+                    create_member(
+                        username_clean,
+                        password,
+                        name,
+                        email_clean,
+                    )
                 )
 
                 if success:
@@ -2238,7 +2296,7 @@ def register_page():
                     )
 
                     st.info(
-                        "請返回登入。"
+                        "會員期限：永久"
                     )
 
                 else:
@@ -2247,12 +2305,16 @@ def register_page():
                         str(result)
                     )
 
+        st.divider()
+
         if st.button(
             "⬅️ 返回登入",
             use_container_width=True,
         ):
 
-            st.session_state.page = "login"
+            st.session_state.page = (
+                "login"
+            )
 
             st.rerun()
 
@@ -2285,8 +2347,10 @@ current_username = (
     st.session_state.username
 )
 
-current_member = find_member(
-    current_username
+current_member = (
+    find_member(
+        current_username
+    )
 )
 
 if not current_member:
@@ -2327,7 +2391,9 @@ if member_status != "active":
         "⛔ 帳號已停權。"
     )
 
-    if st.button("🚪 登出"):
+    if st.button(
+        "🚪 登出"
+    ):
 
         logout()
 
@@ -2341,7 +2407,7 @@ if member_status != "active":
 with st.sidebar:
 
     st.markdown(
-        "## 🦞 OpenClaw 半自動化"
+        "## 🦞 OpenClaw AI"
     )
 
     st.success(
@@ -2363,7 +2429,7 @@ with st.sidebar:
     )
 
     st.success(
-        "♾️ 永久會員"
+        "♾️ 會員期限：永久"
     )
 
     st.divider()
@@ -2380,6 +2446,10 @@ with st.sidebar:
             "🟡 OpenClaw 尚未設定"
         )
 
+        st.caption(
+            "網站仍可正常使用。"
+        )
+
     st.divider()
 
     if st.button(
@@ -2391,7 +2461,7 @@ with st.sidebar:
 
 
 # =========================================================
-# 主標題
+# 標題
 # =========================================================
 
 st.markdown(
@@ -2403,7 +2473,8 @@ st.markdown(
 
 st.markdown(
     '<div class="main-subtitle">'
-    'OpenClaw 半自動化｜商品分析｜蝦皮｜TikTok｜'
+    'OpenClaw 龍蝦｜AI 商品分析｜'
+    '多 Provider 自動切換｜'
     'Image-to-Video｜永久會員'
     '</div>',
     unsafe_allow_html=True,
@@ -2411,86 +2482,90 @@ st.markdown(
 
 
 # =========================================================
-# 1 OpenClaw 狀態
+# OpenClaw 狀態
 # =========================================================
 
-st.markdown(
-    '<div class="section-title">'
-    '🦞 1｜OpenClaw 狀態'
-    '</div>',
-    unsafe_allow_html=True,
+st.subheader(
+    "🦞 OpenClaw 龍蝦狀態"
 )
 
-if openclaw_is_configured():
+if not openclaw_is_configured():
 
-    st.success(
-        "🟢 OpenClaw Gateway 已設定"
+    st.info(
+        "🟡 OpenClaw 尚未連接。"
+        "\n\n"
+        "網站可以正常使用。"
+        "\n\n"
+        "設定 Gateway URL + Token 後，"
+        "即可啟用真影片生成。"
     )
-
-    if st.button(
-        "🔄 測試 OpenClaw",
-        use_container_width=True,
-    ):
-
-        try:
-
-            with st.spinner(
-                "正在測試 OpenClaw..."
-            ):
-
-                result = openclaw_invoke(
-                    "video_generate",
-                    {
-                        "action": "list"
-                    },
-                    timeout=30,
-                )
-
-            st.success(
-                "🎉 OpenClaw Gateway 連線成功"
-            )
-
-            st.session_state.openclaw_last_response = (
-                json.dumps(
-                    result,
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-
-        except Exception as error:
-
-            st.error(
-                "❌ OpenClaw 連線失敗"
-            )
-
-            st.code(
-                str(error)
-            )
 
 else:
 
-    st.info(
-        "🟡 OpenClaw 尚未設定。\n\n"
-        "網站仍然可以使用商品分析、文案與 Prompt 功能。\n\n"
-        "設定 Gateway 後才能送出真影片任務。"
+    status_col1, status_col2 = (
+        st.columns(2)
     )
+
+    with status_col1:
+
+        st.success(
+            "🟢 OpenClaw Gateway 已設定"
+        )
+
+    with status_col2:
+
+        if st.button(
+            "🔄 測試 OpenClaw",
+            use_container_width=True,
+        ):
+
+            with st.spinner(
+                "正在連接 OpenClaw..."
+            ):
+
+                result = (
+                    check_openclaw()
+                )
+
+            if result.get(
+                "available"
+            ):
+
+                st.success(
+                    "🎉 OpenClaw 連線成功"
+                )
+
+            else:
+
+                st.error(
+                    "OpenClaw 連線失敗"
+                )
+
+                st.code(
+                    str(
+                        result.get(
+                            "message",
+                            "",
+                        )
+                    )
+                )
 
 
 # =========================================================
-# OpenClaw 設定
+# API 設定
 # =========================================================
 
 with st.expander(
-    "⚙️ OpenClaw 設定"
+    "⚙️ OpenClaw 設定",
+    expanded=False,
 ):
 
     st.write(
-        "不要把 Provider API Key 直接寫進 app.py。"
+        "這裡不需要把 Provider API Key 寫死在程式碼。"
     )
 
     st.write(
-        "Provider 金鑰應放在 OpenClaw / Secrets 環境。"
+        "Provider Key 應該設定在 OpenClaw Gateway 那邊。"
     )
 
     st.code(
@@ -2501,30 +2576,27 @@ with st.expander(
     if openclaw_is_configured():
 
         st.success(
-            "🟢 Gateway URL + Token 已讀取"
+            "OpenClaw Gateway 設定完整。"
         )
 
     else:
 
         st.warning(
-            "🟡 尚未設定 Gateway"
+            "目前沒有 OpenClaw Gateway 設定。"
         )
 
 
 # =========================================================
-# 2 商品圖片
+# 商品圖片
 # =========================================================
 
-st.markdown(
-    '<div class="section-title">'
-    '📷 2｜商品圖片'
-    '</div>',
-    unsafe_allow_html=True,
+st.subheader(
+    "1｜📷 商品圖片"
 )
 
 uploaded_file = st.file_uploader(
 
-    "從手機選擇商品圖片",
+    "上傳商品圖片",
 
     type=[
         "jpg",
@@ -2556,13 +2628,18 @@ if uploaded_file:
         )
 
         st.success(
-            "✅ 商品圖片讀取成功"
+            "✅ 商品圖片已讀取"
         )
 
         st.image(
+
             prepared_image,
-            caption="OpenClaw Image-to-Video 參考圖",
+
+            caption=
+                "這張圖片會作為影片生成參考圖",
+
             use_container_width=True,
+
         )
 
     except Exception as error:
@@ -2577,14 +2654,11 @@ if uploaded_file:
 
 
 # =========================================================
-# 3 商品資料
+# 商品資料
 # =========================================================
 
-st.markdown(
-    '<div class="section-title">'
-    '📦 3｜商品資料'
-    '</div>',
-    unsafe_allow_html=True,
+st.subheader(
+    "2｜📦 商品資料"
 )
 
 col1, col2 = st.columns(2)
@@ -2593,57 +2667,63 @@ with col1:
 
     product_name = st.text_input(
         "商品名稱",
-        placeholder="例如：無線藍牙耳機",
+        placeholder=
+            "可留空",
     )
 
     product_price = st.text_input(
         "商品價格",
-        placeholder="例如：399",
+        placeholder=
+            "例如：399",
     )
 
     product_cost = st.text_input(
         "商品成本",
-        placeholder="例如：250",
+        placeholder=
+            "例如：250",
     )
 
     commission_rate = st.text_input(
         "分潤比例",
-        placeholder="例如：12%",
+        placeholder=
+            "例如：12%",
     )
+
 
 with col2:
 
     monthly_sales = st.text_input(
         "月銷量",
-        placeholder="例如：1500",
+        placeholder=
+            "例如：1500",
     )
 
     product_rating = st.text_input(
         "商品評分",
-        placeholder="例如：4.8",
+        placeholder=
+            "例如：4.8",
     )
 
     product_url = st.text_input(
         "商品連結",
-        placeholder="可留空",
+        placeholder=
+            "可留空",
     )
 
     product_spec = st.text_area(
         "商品規格",
-        placeholder="例如：顏色、尺寸、容量、材質",
-        height=120,
+        placeholder=
+            "可留空",
+        height=130,
     )
 
 
 # =========================================================
-# 4 平台
+# 平台
 # =========================================================
 
-st.markdown(
-    '<div class="section-title">'
-    '🎯 4｜目標平台'
-    '</div>',
-    unsafe_allow_html=True,
+st.subheader(
+    "3｜🎯 目標平台"
 )
 
 target_platform = st.radio(
@@ -2662,14 +2742,11 @@ target_platform = st.radio(
 
 
 # =========================================================
-# 5 AI 功能
+# AI 功能
 # =========================================================
 
-st.markdown(
-    '<div class="section-title">'
-    '🤖 5｜AI 半自動化功能'
-    '</div>',
-    unsafe_allow_html=True,
+st.subheader(
+    "4｜🤖 AI 功能"
 )
 
 generate_options = [
@@ -2682,18 +2759,20 @@ generate_options = [
 
     "TikTok 文案",
 
-    "OpenClaw 影片 Prompt",
-
     "OpenClaw 真生成影片",
 
+    "多 Provider 自動切換",
+
     "分潤合規檢查",
+
+    "完整流程",
 
 ]
 
 
 selected_items = st.multiselect(
 
-    "選擇這次要執行的功能",
+    "AI 功能",
 
     generate_options,
 
@@ -2703,66 +2782,129 @@ selected_items = st.multiselect(
 
 
 # =========================================================
-# 6 影片設定
+# 影片設定
 # =========================================================
 
-st.markdown(
-    '<div class="section-title">'
-    '🎬 6｜影片設定'
-    '</div>',
-    unsafe_allow_html=True,
+st.subheader(
+    "5｜🎬 真生成影片設定"
 )
 
-v1, v2, v3 = st.columns(3)
+vcol1, vcol2, vcol3 = (
+    st.columns(3)
+)
 
-with v1:
+with vcol1:
 
     video_duration = st.selectbox(
+
         "影片秒數",
-        [5, 6, 8, 10, 12],
+
+        [
+            5,
+            6,
+            8,
+            10,
+            12,
+        ],
+
         index=3,
+
     )
 
-with v2:
+
+with vcol2:
 
     video_ratio = st.selectbox(
-        "影片比例",
+
+        "比例",
+
         [
             "9:16",
             "16:9",
             "1:1",
         ],
+
         index=0,
+
     )
 
-with v3:
+
+with vcol3:
 
     video_model = st.text_input(
-        "Provider / Model",
-        placeholder="留空＝OpenClaw 自動選",
+
+        "指定 Provider / Model（可留空）",
+
+        placeholder=
+            "留空＝OpenClaw 自動選擇",
+
     )
 
 
-st.caption(
-    "💡 留空時，由 OpenClaw 依你的 Provider / fallback 設定處理。"
+st.info(
+    "💡 Model 留空時，由 OpenClaw 依照可用 Provider 與 fallback 設定自動選擇。"
 )
 
 
 # =========================================================
-# 7 一鍵 AI 半自動化
+# Prompt 預覽
 # =========================================================
 
-st.markdown(
-    '<div class="section-title">'
-    '🚀 7｜一鍵 AI 半自動化'
-    '</div>',
-    unsafe_allow_html=True,
+kling_prompt = build_video_prompt(
+
+    product_name=
+        product_name,
+
+    product_spec=
+        product_spec,
+
+    target_platform=
+        target_platform,
+
+    duration=
+        video_duration,
+
+)
+
+st.session_state.kling_prompt = (
+    kling_prompt
+)
+
+
+with st.expander(
+    "🎬 查看影片 Prompt"
+):
+
+    st.text_area(
+
+        "Video Prompt",
+
+        value=
+            kling_prompt,
+
+        height=450,
+
+    )
+
+
+# =========================================================
+# 啟動真生成
+# =========================================================
+
+st.subheader(
+    "6｜🚀 啟動 AI"
 )
 
 if st.button(
-    "🚀 開始 AI 半自動化分析",
+
+    "🦞🚀 啟動 OpenClaw 真生成影片",
+
     type="primary",
+
     use_container_width=True,
+
+    key="start_openclaw_video",
+
 ):
 
     if not prepared_image_bytes:
@@ -2771,354 +2913,124 @@ if st.button(
             "❌ 請先上傳商品圖片。"
         )
 
+    elif not openclaw_is_configured():
+
+        st.warning(
+            "🟡 OpenClaw 尚未設定。"
+        )
+
+        st.info(
+            "網站本身正常。"
+            "\n\n"
+            "設定 OpenClaw Gateway 後，"
+            "這個按鈕才會真正提交影片生成。"
+        )
+
     else:
 
         with st.spinner(
-            "🤖 AI 正在建立商品內容..."
+            "🦞 OpenClaw 正在提交真影片生成任務..."
         ):
 
-            # 商品分析
-            if (
-                "商品辨識" in selected_items
-                or "AI 選品分析" in selected_items
-                or "完整流程" in selected_items
-            ):
+            try:
 
-                st.session_state.analysis_result = (
-                    analyze_product(
-                        product_name,
-                        product_price,
-                        product_cost,
-                        commission_rate,
-                        monthly_sales,
-                        product_rating,
-                        product_spec,
-                        target_platform,
+                result = (
+                    openclaw_generate_video(
+
+                        image_bytes=
+                            prepared_image_bytes,
+
+                        prompt=
+                            kling_prompt,
+
+                        duration=
+                            video_duration,
+
+                        model=
+                            video_model.strip(),
+
                     )
                 )
 
-            # 蝦皮
-            if (
-                "蝦皮上架文案"
-                in selected_items
-            ):
-
-                st.session_state.shopee_copy = (
-                    generate_shopee_copy(
-                        product_name,
-                        product_price,
-                        product_spec,
-                        target_platform,
+                processed = (
+                    process_openclaw_video_result(
+                        result
                     )
                 )
 
-            # TikTok
-            if (
-                "TikTok 文案"
-                in selected_items
-            ):
-
-                st.session_state.tiktok_copy = (
-                    generate_tiktok_copy(
-                        product_name,
-                        product_spec,
+                status = (
+                    processed.get(
+                        "status",
+                        "submitted",
                     )
                 )
 
-            # 分潤
-            commission_result = ""
+                st.session_state.video_status = (
+                    status
+                )
 
-            if (
-                "分潤合規檢查"
-                in selected_items
-            ):
-
-                commission_result = (
-                    commission_check(
-                        commission_rate,
-                        product_url,
+                task_id = (
+                    processed.get(
+                        "task_id",
+                        "",
                     )
                 )
 
-            # Prompt
-            if (
-                "OpenClaw 影片 Prompt"
-                in selected_items
-                or "OpenClaw 真生成影片"
-                in selected_items
-            ):
+                if task_id:
 
-                st.session_state.video_prompt = (
-                    build_video_prompt(
-                        product_name,
-                        product_spec,
-                        target_platform,
-                        video_duration,
-                        video_ratio,
+                    st.session_state.video_task_id = (
+                        task_id
                     )
-                )
 
-            st.success(
-                "🎉 AI 半自動化內容建立完成！"
-            )
+                if processed.get(
+                    "video_url"
+                ):
 
-        # =================================================
-        # 顯示結果
-        # =================================================
-
-        if st.session_state.analysis_result:
-
-            with st.expander(
-                "🔎 商品分析結果",
-                expanded=True,
-            ):
-
-                st.text_area(
-                    "商品分析",
-                    value=st.session_state.analysis_result,
-                    height=400,
-                )
-
-        if st.session_state.shopee_copy:
-
-            with st.expander(
-                "🛒 蝦皮文案",
-                expanded=True,
-            ):
-
-                st.text_area(
-                    "蝦皮文案",
-                    value=st.session_state.shopee_copy,
-                    height=400,
-                )
-
-        if st.session_state.tiktok_copy:
-
-            with st.expander(
-                "🎵 TikTok 文案",
-                expanded=True,
-            ):
-
-                st.text_area(
-                    "TikTok 文案",
-                    value=st.session_state.tiktok_copy,
-                    height=400,
-                )
-
-        if commission_result:
-
-            with st.expander(
-                "💰 分潤合規檢查",
-                expanded=True,
-            ):
-
-                st.text_area(
-                    "分潤檢查",
-                    value=commission_result,
-                    height=300,
-                )
-
-        if st.session_state.video_prompt:
-
-            with st.expander(
-                "🎬 OpenClaw 影片 Prompt",
-                expanded=True,
-            ):
-
-                st.text_area(
-                    "影片 Prompt",
-                    value=st.session_state.video_prompt,
-                    height=500,
-                )
-
-
-# =========================================================
-# 8 影片 Prompt
-# =========================================================
-
-if not st.session_state.video_prompt:
-
-    st.session_state.video_prompt = (
-        build_video_prompt(
-            product_name,
-            product_spec,
-            target_platform,
-            video_duration,
-            video_ratio,
-        )
-    )
-
-
-with st.expander(
-    "🎬 查看 / 複製 OpenClaw 影片 Prompt"
-):
-
-    st.text_area(
-        "OpenClaw Video Prompt",
-        value=st.session_state.video_prompt,
-        height=500,
-    )
-
-
-# =========================================================
-# 9 OpenClaw 真影片
-# =========================================================
-
-st.markdown(
-    '<div class="section-title">'
-    '🦞 9｜OpenClaw 真影片'
-    '</div>',
-    unsafe_allow_html=True,
-)
-
-if not openclaw_is_configured():
-
-    st.warning(
-        "🟡 目前尚未設定 OpenClaw Gateway。"
-    )
-
-    st.caption(
-        "這不影響商品分析、文案與 Prompt。"
-        "只有真影片生成需要 Gateway。"
-    )
-
-else:
-
-    if st.button(
-        "🦞🚀 送出 OpenClaw 真影片任務",
-        type="primary",
-        use_container_width=True,
-        key="generate_real_video",
-    ):
-
-        if not prepared_image_bytes:
-
-            st.error(
-                "❌ 請先上傳商品圖片。"
-            )
-
-        else:
-
-            # 防止重複任務
-            if (
-                st.session_state.video_status
-                in [
-                    "submitted",
-                    "queued",
-                    "processing",
-                    "running",
-                    "pending",
-                ]
-            ):
-
-                st.warning(
-                    "⚠️ 已經有一個影片任務正在處理。"
-                )
-
-            else:
-
-                try:
-
-                    with st.spinner(
-                        "🦞 OpenClaw 正在提交影片任務..."
-                    ):
-
-                        result = openclaw_generate_video(
-
-                            image_bytes=prepared_image_bytes,
-
-                            prompt=st.session_state.video_prompt,
-
-                            duration=video_duration,
-
-                            ratio=video_ratio,
-
-                            model=video_model.strip(),
-
-                        )
-
-                    processed = (
-                        process_openclaw_result(
+                    success = (
+                        try_get_video_from_result(
                             result
                         )
                     )
 
-                    task_id = processed[
-                        "task_id"
-                    ]
+                    if success:
 
-                    status = processed[
-                        "status"
-                    ]
+                        st.balloons()
 
-                    video_url = processed[
-                        "video_url"
-                    ]
+                        st.success(
+                            "🎉 OpenClaw 真影片生成完成！"
+                        )
 
-                    st.session_state.video_status = (
-                        status
+                else:
+
+                    st.success(
+                        "✅ OpenClaw 已提交影片生成任務！"
                     )
 
                     if task_id:
 
-                        st.session_state.video_task_id = (
-                            task_id
-                        )
-
-                    if video_url:
-
-                        try:
-
-                            save_generated_video(
-                                video_url
-                            )
-
-                            st.success(
-                                "🎉 影片已完成並載入！"
-                            )
-
-                            st.rerun()
-
-                        except Exception as error:
-
-                            st.warning(
-                                "影片已產生，但下載到 Streamlit 失敗。"
-                            )
-
-                            st.code(
-                                str(error)
-                            )
-
-                    else:
-
-                        st.success(
-                            "✅ OpenClaw 影片任務已送出！"
-                        )
-
-                        if task_id:
-
-                            st.info(
-                                f"Task ID：{task_id}"
-                            )
-
                         st.info(
-                            "影片生成通常是非同步的。"
-                            "請到下方按「查詢影片狀態」。"
+                            "Task ID："
+                            + task_id
                         )
 
-                except Exception as error:
-
-                    st.error(
-                        "❌ OpenClaw 影片任務失敗"
+                    st.info(
+                        "影片是非同步生成。"
+                        "完成後可以按「查詢影片狀態」。"
                     )
 
-                    st.code(
-                        str(error)
-                    )
+            except Exception as error:
+
+                st.error(
+                    "❌ OpenClaw 真影片生成失敗"
+                )
+
+                st.code(
+                    str(error)
+                )
 
 
 # =========================================================
-# 10 任務狀態
+# 查詢影片
 # =========================================================
 
 if (
@@ -3128,598 +3040,85 @@ if (
 
     st.divider()
 
-    st.markdown(
-        '<div class="section-title">'
-        '🔄 10｜影片任務狀態'
-        '</div>',
-        unsafe_allow_html=True,
+    st.subheader(
+        "🔄 影片任務"
     )
 
-    status_text = (
-        st.session_state.video_status
-        or "processing"
-    )
+    c1, c2 = st.columns(2)
 
-    if st.session_state.video_task_id:
+    with c1:
 
         st.write(
-            f"Task ID：`{st.session_state.video_task_id}`"
+            "狀態："
+            f"`{st.session_state.video_status or 'processing'}`"
         )
 
-    st.write(
-        f"目前狀態：`{status_text}`"
-    )
+        if st.session_state.video_task_id:
 
-    if st.button(
-        "🔄 查詢影片狀態",
-        use_container_width=True,
-    ):
-
-        if not openclaw_is_configured():
-
-            st.error(
-                "OpenClaw 尚未設定。"
+            st.write(
+                "Task ID："
+                f"`{st.session_state.video_task_id}`"
             )
 
-        else:
+    with c2:
 
-            try:
+        if st.button(
+            "🔄 查詢影片狀態",
+            use_container_width=True,
+        ):
 
-                with st.spinner(
-                    "🦞 OpenClaw 正在查詢..."
-                ):
-
-                    result = check_video_status()
-
-                if st.session_state.video_bytes:
-
-                    st.success(
-                        "🎉 影片完成！"
-                    )
-
-                else:
-
-                    st.info(
-                        "目前狀態："
-                        + (
-                            st.session_state.video_status
-                            or "processing"
-                        )
-                    )
-
-            except Exception as error:
+            if not openclaw_is_configured():
 
                 st.error(
-                    "❌ 查詢失敗"
+                    "OpenClaw 尚未設定。"
                 )
 
-                st.code(
-                    str(error)
-                )
+            else:
 
+                try:
 
-# =========================================================
-# 11 影片播放器
-# =========================================================
+                    with st.spinner(
+                        "正在查詢..."
+                    ):
 
-st.divider()
+                        result = (
+                            check_video_status()
+                        )
 
-st.markdown(
-    '<div class="section-title">'
-    '🎞️ 11｜AI 真生成影片'
-    '</div>',
-    unsafe_allow_html=True,
-)
+                    if st.session_state.video_bytes:
 
-if st.session_state.video_bytes:
+                        st.success(
+                            "🎉 影片已完成！"
+                        )
 
-    st.success(
-        "🟢 AI 真影片已完成"
-    )
+                    else:
 
-    st.video(
-        st.session_state.video_bytes,
-        format=st.session_state.video_mime,
-        start_time=0,
-    )
+                        st.info(
+                            "目前狀態："
+                            + (
+                                st.session_state.video_status
+                                or "processing"
+                            )
+                        )
 
-    st.caption(
-        "📱 手機建議：MP4 / H.264 / AAC / 9:16"
-    )
+                except Exception as error:
 
-    st.download_button(
-        "⬇️ 下載 AI 真生成影片",
-        data=st.session_state.video_bytes,
-        file_name=(
-            st.session_state.video_name
-            or "AI影片.mp4"
-        ),
-        mime=st.session_state.video_mime,
-        use_container_width=True,
-        key="download_ai_video",
-    )
-
-    if st.button(
-        "🗑️ 清除目前 AI 影片",
-        use_container_width=True,
-    ):
-
-        clear_generated_video()
-
-        st.rerun()
-
-else:
-
-    st.info(
-        "目前沒有完成的 AI 影片。"
-    )
-
-
-# =========================================================
-# OpenClaw 回應
-# =========================================================
-
-if st.session_state.openclaw_last_response:
-
-    with st.expander(
-        "🔍 OpenClaw 最後回應（除錯用）"
-    ):
-
-        st.code(
-            st.session_state.openclaw_last_response,
-            language="json",
-        )
-
-
-# =========================================================
-# 12 手動影片上傳
-# =========================================================
-
-st.divider()
-
-st.markdown(
-    '<div class="section-title">'
-    '📤 12｜影片上傳 / 預覽'
-    '</div>',
-    unsafe_allow_html=True,
-)
-
-st.caption(
-    "支援 MP4 / MOV / WEBM"
-)
-
-uploaded_video = st.file_uploader(
-
-    "從手機選擇影片",
-
-    type=[
-        "mp4",
-        "mov",
-        "webm",
-    ],
-
-    accept_multiple_files=False,
-
-    key="manual_video_uploader",
-
-)
-
-
-if uploaded_video:
-
-    try:
-
-        (
-            raw,
-            mime,
-            ext,
-            size_mb,
-        ) = save_uploaded_video(
-            uploaded_video
-        )
-
-        st.success(
-            "✅ 影片上傳成功"
-        )
-
-        st.write(
-            f"格式：**{mime}**"
-        )
-
-        st.write(
-            f"大小：**{size_mb:.2f} MB**"
-        )
-
-        st.video(
-            raw,
-            format=mime,
-            start_time=0,
-        )
-
-        safe_name = re.sub(
-            r'[\\/:*?"<>|]+',
-            "_",
-            uploaded_video.name,
-        )
-
-        st.download_button(
-            "⬇️ 下載目前影片",
-            data=raw,
-            file_name=safe_name,
-            mime=mime,
-            use_container_width=True,
-            key="download_manual_video",
-        )
-
-        if ext == ".mp4":
-
-            st.success(
-                "🟢 MP4：手機最推薦。"
-            )
-
-        elif ext == ".mov":
-
-            st.warning(
-                "🟡 MOV：部分手機瀏覽器可能需要轉 MP4。"
-            )
-
-        elif ext == ".webm":
-
-            st.warning(
-                "🟡 WEBM：部分手機瀏覽器可能需要轉 MP4。"
-            )
-
-    except Exception as error:
-
-        st.error(
-            "❌ 影片處理失敗"
-        )
-
-        st.code(
-            str(error)
-        )
-
-
-# =========================================================
-# Session 影片
-# =========================================================
-
-if st.session_state.uploaded_video_bytes:
-
-    st.divider()
-
-    st.subheader(
-        "🎞️ 目前上傳影片"
-    )
-
-    st.caption(
-        st.session_state.uploaded_video_name
-    )
-
-    st.video(
-        st.session_state.uploaded_video_bytes,
-        format=st.session_state.uploaded_video_mime,
-        start_time=0,
-    )
-
-    if st.button(
-        "🗑️ 清除目前上傳影片",
-        use_container_width=True,
-    ):
-
-        clear_uploaded_video()
-
-        st.rerun()
-
-
-# =========================================================
-# 13 發布前檢查
-# =========================================================
-
-st.divider()
-
-st.markdown(
-    '<div class="section-title">'
-    '✅ 13｜發布前檢查'
-    '</div>',
-    unsafe_allow_html=True,
-)
-
-check_items = [
-
-    "商品圖片清楚",
-
-    "商品名稱已確認",
-
-    "商品價格已確認",
-
-    "商品規格已確認",
-
-    "商品庫存已確認",
-
-    "商品連結已確認",
-
-    "影片商品與原商品一致",
-
-    "影片沒有第二個商品",
-
-    "影片沒有商品變形",
-
-    "影片沒有錯誤文字",
-
-    "影片沒有假價格",
-
-    "影片沒有假贈品",
-
-    "影片沒有假認證",
-
-    "文案沒有誇大效果",
-
-    "分潤資格已確認",
-
-]
-
-
-checked = 0
-
-for item in check_items:
-
-    key = (
-        "publish_check_"
-        + hashlib.md5(
-            item.encode("utf-8")
-        ).hexdigest()
-    )
-
-    if st.checkbox(
-        item,
-        key=key,
-    ):
-
-        checked += 1
-
-
-progress = (
-    checked / len(check_items)
-)
-
-st.progress(progress)
-
-st.write(
-    f"完成：**{checked}/{len(check_items)}**"
-)
-
-if checked == len(check_items):
-
-    st.success(
-        "🎉 發布前檢查全部完成。"
-    )
-
-else:
-
-    st.warning(
-        "⚠️ 還有項目需要人工確認。"
-    )
-
-
-# =========================================================
-# 14 管理員
-# =========================================================
-
-if member_role.lower() == "admin":
-
-    st.divider()
-
-    with st.expander(
-        "👑 14｜管理員中心"
-    ):
-
-        members = load_members()
-
-        st.write(
-            f"目前會員數：**{len(members)}**"
-        )
-
-        for member in members:
-
-            mid = member.get(
-                "id",
-                "",
-            )
-
-            username = member.get(
-                "username",
-                "",
-            )
-
-            name = member.get(
-                "name",
-                "",
-            )
-
-            role = member.get(
-                "role",
-                "member",
-            )
-
-            status = member.get(
-                "status",
-                "active",
-            )
-
-            with st.expander(
-                f"👤 {name}｜{username}"
-            ):
-
-                st.write(
-                    "會員期限：**永久**"
-                )
-
-                st.write(
-                    f"身份：**{role}**"
-                )
-
-                new_status = st.selectbox(
-
-                    "帳號狀態",
-
-                    [
-                        "active",
-                        "disabled",
-                    ],
-
-                    index=(
-                        0
-                        if status == "active"
-                        else 1
-                    ),
-
-                    key=f"status_{mid}",
-
-                )
-
-                roles = [
-                    "member",
-                    "vip",
-                    "admin",
-                ]
-
-                new_role = st.selectbox(
-
-                    "會員等級",
-
-                    roles,
-
-                    index=(
-                        roles.index(role)
-                        if role in roles
-                        else 0
-                    ),
-
-                    key=f"role_{mid}",
-
-                )
-
-                if st.button(
-
-                    "💾 儲存會員設定",
-
-                    key=f"save_{mid}",
-
-                    use_container_width=True,
-
-                ):
-
-                    update_member(
-
-                        mid,
-
-                        {
-                            "status": new_status,
-                            "role": new_role,
-                            "permanent": True,
-                        },
-
+                    st.error(
+                        "查詢失敗"
                     )
 
-                    st.success(
-                        "會員資料已更新。"
+                    st.code(
+                        str(error)
                     )
 
-                    st.rerun()
-
 
 # =========================================================
-# 15 系統說明
-# =========================================================
-
-with st.expander(
-    "⚙️ 15｜目前系統架構"
-):
-
-    st.markdown(
-        """
-### 🦞 OpenClaw 半自動化流程
-
-📱 手機
-
-↓
-
-🌐 Streamlit
-
-↓
-
-📷 商品圖片
-
-↓
-
-📦 商品資料
-
-↓
-
-🤖 商品分析
-
-↓
-
-✍️ 蝦皮文案
-
-↓
-
-🎵 TikTok 文案
-
-↓
-
-🎬 OpenClaw Prompt
-
-↓
-
-🦞 OpenClaw Gateway
-
-↓
-
-🔄 Provider / Fallback
-
-↓
-
-🎞️ 真影片生成
-
-↓
-
-📱 Streamlit 播放
-
-↓
-
-⬇️ 手機下載
-
-
-### 注意
-
-OpenClaw 本身不是「免費無限影片生成額度」。
-
-真正產生影片仍然需要 OpenClaw 後面的
-影片 Provider 有可用的服務與額度。
-
-本網站的設計是：
-
-「OpenClaw 負責管理與調度」
-
-而不是：
-
-「OpenClaw 自己憑空提供無限影片額度」。
-"""
-    )
-
-
-# =========================================================
-# Footer
+# 真生成影片播放器
 # =========================================================
 
 st.divider()
 
-st.caption(
-    "AI 蝦皮半自動化 2.5 PRO｜"
-    "OpenClaw 半自動化｜"
-    "Image-to-Video｜"
-    "永久會員｜"
-    "MP4 / MOV / WEBM"
-)
+st.markdown(
+
+    '<div class="video-title">'
+    '🎬 真生成影片中心
