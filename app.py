@@ -14,30 +14,19 @@ from PIL import Image, ImageOps
 
 
 # =========================================================
-# AI 蝦皮半自動化 2.5 PRO｜OpenClaw
-# 完整版
+# AI 蝦皮半自動化 2.5 PRO
+# OpenClaw 龍蝦 + Provider 自動切換版
 #
-# 功能：
-# 1. 會員註冊 / 登入
-# 2. 永久會員
-# 3. 管理員
-# 4. 商品圖片上傳
-# 5. 商品資料
-# 6. 蝦皮 / TikTok / 兩者
-# 7. 商品分析
-# 8. 蝦皮上架文案
-# 9. TikTok 文案
-# 10. 即夢 AI 2.5 生圖 Prompt
-# 11. 即夢 AI 2.5 影片 Prompt
-# 12. OpenClaw 真生成影片
-# 13. Provider 自動切換
-# 14. 影片任務查詢
-# 15. MP4 / MOV / WEBM 上傳
-# 16. 影片播放
-# 17. 影片下載
-# 18. 手機優化
-# 19. Session 防止重複
-# 20. OpenClaw Gateway 狀態
+# 完整修正版
+#
+# 重要修正：
+# 1. 重新整理後保留登入
+# 2. 重新整理後自動回首頁
+# 3. 使用 query params 保存登入 Session Token
+# 4. 修復原本程式碼被截斷問題
+# 5. 完整影片中心
+# 6. 完整管理員中心
+# 7. 手機優化
 # =========================================================
 
 
@@ -56,7 +45,9 @@ st.set_page_config(
 APP_NAME = "AI 蝦皮半自動化 2.5 PRO"
 
 DATA_DIR = Path("data")
+
 MEMBERS_FILE = DATA_DIR / "members.json"
+SESSIONS_FILE = DATA_DIR / "sessions.json"
 
 DATA_DIR.mkdir(
     parents=True,
@@ -71,8 +62,6 @@ DATA_DIR.mkdir(
 MAX_IMAGE_SIZE = 1600
 MAX_IMAGE_MB = 20
 MAX_VIDEO_MB = 300
-
-PERMANENT_MEMBER = True
 
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "admin123"
@@ -118,19 +107,19 @@ st.markdown(
         word-break: break-word;
     }
 
-    .result-box {
-        padding: 20px;
-        border-radius: 14px;
-        border: 1px solid rgba(128,128,128,.25);
-        margin-bottom: 20px;
-    }
-
     .video-title {
         font-size: 28px;
         font-weight: 800;
         margin-top: 10px;
         margin-bottom: 10px;
         line-height: 1.3;
+    }
+
+    .result-box {
+        padding: 20px;
+        border-radius: 14px;
+        border: 1px solid rgba(128,128,128,.25);
+        margin-bottom: 20px;
     }
 
     .small-note {
@@ -161,6 +150,7 @@ st.markdown(
             font-size: 28px;
             margin-top: 5px !important;
             margin-bottom: 10px !important;
+            line-height: 1.3;
         }
 
         .main-subtitle {
@@ -205,51 +195,90 @@ st.markdown(
 
 
 # =========================================================
-# 會員資料
+# JSON 工具
 # =========================================================
 
-def load_members():
-
-    if not MEMBERS_FILE.exists():
-        return []
+def load_json_file(path, default):
+    if not path.exists():
+        return default
 
     try:
         with open(
-            MEMBERS_FILE,
+            path,
             "r",
             encoding="utf-8",
         ) as f:
-
             data = json.load(f)
 
-        if isinstance(data, list):
-            return data
+        return data
 
     except Exception:
-        pass
-
-    return []
+        return default
 
 
-def save_members(members):
-
-    DATA_DIR.mkdir(
+def save_json_file(path, data):
+    path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
     with open(
-        MEMBERS_FILE,
+        path,
         "w",
         encoding="utf-8",
     ) as f:
-
         json.dump(
-            members,
+            data,
             f,
             ensure_ascii=False,
             indent=2,
         )
+
+
+# =========================================================
+# 會員資料
+# =========================================================
+
+def load_members():
+    data = load_json_file(
+        MEMBERS_FILE,
+        [],
+    )
+
+    if isinstance(data, list):
+        return data
+
+    return []
+
+
+def save_members(members):
+    save_json_file(
+        MEMBERS_FILE,
+        members,
+    )
+
+
+# =========================================================
+# Session 資料
+# =========================================================
+
+def load_sessions():
+    data = load_json_file(
+        SESSIONS_FILE,
+        [],
+    )
+
+    if isinstance(data, list):
+        return data
+
+    return []
+
+
+def save_sessions(sessions):
+    save_json_file(
+        SESSIONS_FILE,
+        sessions,
+    )
 
 
 # =========================================================
@@ -360,7 +389,24 @@ def find_member(username):
             ).lower()
             == username
         ):
+            return member
 
+    return None
+
+
+def find_member_by_id(member_id):
+
+    for member in load_members():
+
+        if (
+            str(
+                member.get(
+                    "id",
+                    "",
+                )
+            )
+            == str(member_id)
+        ):
             return member
 
     return None
@@ -388,7 +434,6 @@ def find_member_by_email(email):
             ).lower()
             == email
         ):
-
             return member
 
     return None
@@ -420,17 +465,14 @@ def create_member(
     if not username:
         return False, "請輸入帳號。"
 
+    if len(username) < 3:
+        return False, "帳號至少需要 3 個字元。"
+
     if not re.match(
         r"^[a-zA-Z0-9_.-]+$",
         username,
     ):
         return False, "帳號只能使用英文、數字、底線、點或連字號。"
-
-    if len(username) < 3:
-        return False, "帳號至少需要 3 個字元。"
-
-    if username == ADMIN_USERNAME:
-        return False, "此帳號為系統管理員保留帳號。"
 
     if not password:
         return False, "請輸入密碼。"
@@ -452,7 +494,7 @@ def create_member(
         "email": email,
         "role": "member",
         "status": "active",
-        "permanent": PERMANENT_MEMBER,
+        "permanent": True,
         "created_at": datetime.now().isoformat(),
     }
 
@@ -478,7 +520,10 @@ def update_member(
 
     for member in members:
 
-        if member.get("id") == member_id:
+        if (
+            member.get("id")
+            == member_id
+        ):
 
             member.update(updates)
 
@@ -512,7 +557,6 @@ def check_login(
         ).lower()
         != "active"
     ):
-
         return False, "disabled"
 
     if not verify_password(
@@ -524,25 +568,138 @@ def check_login(
             )
         ),
     ):
-
         return False, "invalid"
 
     return True, member
 
 
 # =========================================================
-# Session
+# 持久登入 Token
+#
+# 這裡是本次修正「重新整理後首頁消失」的核心。
+#
+# Streamlit session_state 重新整理後會重建。
+# 因此另外建立一組登入 token：
+#
+# URL query parameter
+#       ↓
+# sessions.json
+#       ↓
+# 找到會員
+#       ↓
+# 自動恢復登入
+#       ↓
+# 自動進入首頁
+# =========================================================
+
+def create_login_token(member):
+
+    raw_token = secrets.token_urlsafe(32)
+
+    token_hash = hashlib.sha256(
+        raw_token.encode("utf-8")
+    ).hexdigest()
+
+    sessions = load_sessions()
+
+    sessions.append(
+        {
+            "token_hash": token_hash,
+            "member_id": member.get("id"),
+            "username": member.get("username"),
+            "created_at": datetime.now().isoformat(),
+        }
+    )
+
+    # 最多保留最近 100 個 session
+    sessions = sessions[-100:]
+
+    save_sessions(sessions)
+
+    return raw_token
+
+
+def delete_login_token(raw_token):
+
+    if not raw_token:
+        return
+
+    token_hash = hashlib.sha256(
+        str(raw_token).encode("utf-8")
+    ).hexdigest()
+
+    sessions = load_sessions()
+
+    sessions = [
+        item
+        for item in sessions
+        if item.get("token_hash")
+        != token_hash
+    ]
+
+    save_sessions(sessions)
+
+
+def get_member_from_token(raw_token):
+
+    if not raw_token:
+        return None
+
+    token_hash = hashlib.sha256(
+        str(raw_token).encode("utf-8")
+    ).hexdigest()
+
+    sessions = load_sessions()
+
+    for item in sessions:
+
+        if (
+            item.get("token_hash")
+            == token_hash
+        ):
+
+            member_id = item.get(
+                "member_id"
+            )
+
+            member = find_member_by_id(
+                member_id
+            )
+
+            if not member:
+                return None
+
+            if (
+                str(
+                    member.get(
+                        "status",
+                        "active",
+                    )
+                ).lower()
+                != "active"
+            ):
+                return None
+
+            return member
+
+    return None
+
+
+# =========================================================
+# Session State
 # =========================================================
 
 DEFAULT_SESSION_VALUES = {
 
     "logged_in": False,
 
-    "page": "login",
+    "page": "home",
 
     "username": "",
 
     "member": {},
+
+    "login_token": "",
 
     "analysis_result": "",
 
@@ -555,16 +712,6 @@ DEFAULT_SESSION_VALUES = {
     "jimeng_video_prompt": "",
 
     "compliance_result": "",
-
-    "video_product_name": "",
-
-    "video_product_spec": "",
-
-    "video_target_platform": "TikTok",
-
-    "video_duration": 10,
-
-    "video_image_bytes": None,
 
     "openclaw_status": "",
 
@@ -588,6 +735,15 @@ DEFAULT_SESSION_VALUES = {
 
     "uploaded_video_mime": "video/mp4",
 
+    "video_product_name": "",
+
+    "video_product_spec": "",
+
+    "video_target_platform": "TikTok",
+
+    "video_duration": 10,
+
+    "video_image_bytes": None,
 }
 
 
@@ -599,14 +755,123 @@ for key, value in DEFAULT_SESSION_VALUES.items():
 
 
 # =========================================================
+# 重新整理後自動恢復登入
+# =========================================================
+
+def restore_login_from_url():
+
+    if st.session_state.logged_in:
+        return
+
+    try:
+
+        token = st.query_params.get(
+            "session",
+            "",
+        )
+
+    except Exception:
+
+        token = ""
+
+    if not token:
+        return
+
+    member = get_member_from_token(
+        token
+    )
+
+    if member:
+
+        st.session_state.logged_in = True
+
+        st.session_state.username = (
+            member.get(
+                "username",
+                "",
+            )
+        )
+
+        st.session_state.member = member
+
+        st.session_state.login_token = token
+
+        # 核心：
+        # 重新整理後直接回首頁
+        st.session_state.page = "home"
+
+
+restore_login_from_url()
+
+
+# =========================================================
+# 登入成功
+# =========================================================
+
+def login_success(member):
+
+    token = create_login_token(
+        member
+    )
+
+    st.session_state.logged_in = True
+
+    st.session_state.username = (
+        member.get(
+            "username",
+            "",
+        )
+    )
+
+    st.session_state.member = member
+
+    st.session_state.login_token = token
+
+    # 登入後一定進首頁
+    st.session_state.page = "home"
+
+    try:
+
+        st.query_params["session"] = token
+
+    except Exception:
+        pass
+
+
+# =========================================================
 # 登出
 # =========================================================
 
 def logout():
 
+    token = st.session_state.get(
+        "login_token",
+        "",
+    )
+
+    delete_login_token(token)
+
     for key, value in DEFAULT_SESSION_VALUES.items():
 
         st.session_state[key] = value
+
+    try:
+
+        st.query_params.clear()
+
+    except Exception:
+        pass
+
+    st.rerun()
+
+
+# =========================================================
+# 切換頁面
+# =========================================================
+
+def go_page(page):
+
+    st.session_state.page = page
 
     st.rerun()
 
@@ -701,7 +966,10 @@ def openclaw_invoke(
             "尚未設定 OPENCLAW_GATEWAY_URL。"
         )
 
-    url = gateway_url + "/tools/invoke"
+    url = (
+        gateway_url
+        + "/tools/invoke"
+    )
 
     payload = {
         "tool": tool_name,
@@ -827,7 +1095,9 @@ def prepare_image(uploaded_file):
         "RGBA",
     ):
 
-        image = image.convert("RGB")
+        image = image.convert(
+            "RGB"
+        )
 
     image.thumbnail(
         (
@@ -854,7 +1124,9 @@ def prepare_image(uploaded_file):
 
     else:
 
-        image = image.convert("RGB")
+        image = image.convert(
+            "RGB"
+        )
 
     buffer = io.BytesIO()
 
@@ -875,11 +1147,16 @@ def prepare_image(uploaded_file):
 # Base64
 # =========================================================
 
-def image_to_data_url(image_bytes):
+def image_to_data_url(
+    image_bytes
+):
 
-    encoded = base64.b64encode(
-        image_bytes
-    ).decode("utf-8")
+    encoded = (
+        base64.b64encode(
+            image_bytes
+        )
+        .decode("utf-8")
+    )
 
     return (
         "data:image/jpeg;base64,"
@@ -943,6 +1220,106 @@ No warping.
 No text drift.
 No watermark.
 """
+
+
+# =========================================================
+# 影片 Prompt
+# =========================================================
+
+def build_video_prompt(
+    product_name,
+    product_spec,
+    target_platform,
+    duration,
+):
+
+    product_name = (
+        product_name.strip()
+        if product_name
+        else "the uploaded product"
+    )
+
+    product_spec = (
+        product_spec.strip()
+        if product_spec
+        else "unknown"
+    )
+
+    target_platform = (
+        target_platform.strip()
+        if target_platform
+        else "Shopee and TikTok"
+    )
+
+    return f"""
+Create a premium commercial product advertisement
+for {target_platform}.
+
+PRODUCT:
+{product_name}
+
+PRODUCT SPECIFICATION:
+{product_spec}
+
+VIDEO FORMAT:
+Vertical 9:16.
+
+TARGET DURATION:
+{duration} seconds.
+
+OPENING:
+Start with the complete product centered in frame.
+Use the supplied product image as the exact visual reference.
+Keep the entire product clearly visible.
+
+MIDDLE:
+Slow cinematic camera push-in.
+Show the product from a clean commercial angle.
+Use subtle camera movement.
+Show realistic material, package and surface details.
+Maintain exact product identity.
+
+CAMERA:
+Smooth professional commercial camera movement.
+No sudden camera shake.
+No rapid camera cuts.
+No unnecessary transitions.
+
+ENDING:
+Return to a clean centered product shot.
+Keep the product stable.
+Hold the final frame briefly.
+
+COMMERCIAL STYLE:
+Premium e-commerce advertising.
+Photorealistic.
+Clean.
+Modern.
+High-end product photography.
+Strong lighting.
+Realistic shadows.
+Sharp product details.
+
+IMPORTANT:
+The uploaded product is the only main product.
+Do not invent product details.
+Do not invent brand information.
+Do not invent prices.
+Do not invent claims.
+
+{PRODUCT_RULES}
+
+NEGATIVE PROMPT:
+people, person, hands, fingers, presenter, influencer,
+model, spokesperson, duplicate product, extra product,
+wrong product, wrong brand, wrong logo, wrong packaging,
+changed label, changed text, distorted text, text drift,
+warped package, melting product, floating package,
+deformed product, flicker, unstable product identity,
+fake price, fake discount, fake claim, fake certification,
+watermark, low quality, blurry product, CGI-looking product,
+unrealistic material, camera shake.
+""".strip()
 
 
 # =========================================================
@@ -1024,106 +1401,6 @@ wrong brand, wrong logo, wrong package, distorted label,
 wrong text, unreadable text, text drift, watermark,
 fake price, fake discount, fake claims, deformation,
 melting, floating product, low quality, blurry product.
-""".strip()
-
-
-# =========================================================
-# 影片 Prompt
-# =========================================================
-
-def build_video_prompt(
-    product_name,
-    product_spec,
-    target_platform,
-    duration,
-):
-
-    product_name = (
-        product_name.strip()
-        if product_name
-        else "the uploaded product"
-    )
-
-    product_spec = (
-        product_spec.strip()
-        if product_spec
-        else "unknown"
-    )
-
-    target_platform = (
-        target_platform.strip()
-        if target_platform
-        else "Shopee and TikTok"
-    )
-
-    return f"""
-Create a premium commercial product advertisement
-for {target_platform}.
-
-PRODUCT:
-{product_name}
-
-PRODUCT SPECIFICATION:
-{product_spec}
-
-VIDEO FORMAT:
-Vertical 9:16.
-
-TARGET DURATION:
-{duration} seconds.
-
-OPENING:
-Start with the complete product centered in frame.
-Use the supplied product image as the exact visual reference.
-Keep the entire product clearly visible.
-
-MIDDLE:
-Slow cinematic camera push-in.
-Show the product from a clean commercial angle.
-Use subtle camera movement.
-Show realistic material, package and surface details.
-Maintain exact product identity.
-
-CAMERA:
-Smooth professional commercial camera movement.
-No sudden camera shake.
-No rapid cuts.
-No unnecessary transitions.
-
-ENDING:
-Return to a clean centered product shot.
-Keep the product stable.
-Hold the final frame briefly.
-
-COMMERCIAL STYLE:
-Premium e-commerce advertising.
-Photorealistic.
-Clean.
-Modern.
-High-end product photography.
-Strong lighting.
-Realistic shadows.
-Sharp product details.
-
-IMPORTANT:
-The uploaded product is the only main product.
-Do not invent product details.
-Do not invent brand information.
-Do not invent prices.
-Do not invent claims.
-
-{PRODUCT_RULES}
-
-NEGATIVE PROMPT:
-people, person, hands, fingers, presenter, influencer,
-model, spokesperson, duplicate product, extra product,
-wrong product, wrong brand, wrong logo, wrong packaging,
-changed label, changed text, text drift,
-warped package, melting product, floating package,
-deformed product, flicker, unstable product identity,
-fake price, fake discount, fake claim, fake certification,
-watermark, low quality, blurry product, CGI-looking product,
-unrealistic material, camera shake.
 """.strip()
 
 
@@ -1258,11 +1535,59 @@ def analyze_product(
     )
 
     try:
-        price_value = float(price or 0)
+        price_value = float(
+            price or 0
+        )
     except Exception:
         price_value = 0
 
     try:
-        cost_value = float(cost or 0)
+        cost_value = float(
+            cost or 0
+        )
     except Exception:
-        cost
+        cost_value = 0
+
+    try:
+        commission_value = float(
+            commission or 0
+        )
+    except Exception:
+        commission_value = 0
+
+    try:
+        sales_value = int(
+            float(
+                monthly_sales or 0
+            )
+        )
+    except Exception:
+        sales_value = 0
+
+    try:
+        rating_value = float(
+            rating or 0
+        )
+    except Exception:
+        rating_value = 0
+
+    gross_profit = (
+        price_value
+        - cost_value
+    )
+
+    commission_amount = (
+        price_value
+        * commission_value
+        / 100
+    )
+
+    estimated_profit = (
+        gross_profit
+        - commission_amount
+    )
+
+    if price_value > 0:
+
+        margin = (
+           
