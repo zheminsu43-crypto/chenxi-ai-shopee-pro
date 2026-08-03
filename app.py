@@ -2,33 +2,53 @@ import io
 import os
 import re
 import json
+import base64
 import hashlib
 import secrets
+import time
 from datetime import datetime, date, timedelta
+from urllib.parse import urlencode
 
+import requests
 import streamlit as st
 from PIL import Image, ImageOps
 
+
 # =========================================================
 # AI 蝦皮半自動化 2.5 PRO
-# 完整升級版
+# Kling 真生成影片版
 #
-# 重點升級：
-# 1. 商品圖片上傳 / Gemini 圖片分析
-# 2. 商品文案 / TikTok / 即夢 AI 2.5 Prompt
-# 3. 即夢影片 MP4 / MOV / WEBM 上傳
-# 4. 影片立即預覽
-# 5. 影片格式 / MIME 自動判斷
-# 6. MOV / WEBM 若瀏覽器不支援，會提示改用 MP4
-# 7. 影片資料保留在 session，避免頁面重繪後立即消失
-# 8. 影片下載
-# 9. 會員 / 管理員 / 到期日
-# 10. Gemini 模型自動嘗試
+# 功能：
+# 1. 商品圖片上傳
+# 2. Gemini 圖片辨識
+# 3. Gemini 商品分析
+# 4. Gemini 蝦皮文案
+# 5. Gemini TikTok 文案
+# 6. Gemini Kling 影片 Prompt
+# 7. Kling 3.0 Turbo Image-to-Video
+# 8. 真正送 API 生成影片
+# 9. 自動查詢 Kling 任務狀態
+# 10. 生成完成後自動播放
+# 11. 影片 Session 狀態避免重複顯示
+# 12. MP4 / MOV / WEBM 上傳
+# 13. 手機播放提示
+# 14. 影片下載
+# 15. 會員系統
+# 16. 管理員
+# 17. 會員到期
+#
+# Kling：
+# Image-to-Video
+# kling-3.0-turbo
 #
 # 注意：
-# Gemini 負責圖片分析與 Prompt。
-# 即夢負責實際生成影片。
-# 本程式不會直接呼叫即夢影片 API。
+# Gemini = 商品圖片分析 / Prompt
+# Kling = 真正影片生成
+# =========================================================
+
+
+# =========================================================
+# Google Gemini
 # =========================================================
 
 try:
@@ -38,15 +58,17 @@ except ImportError:
     genai = None
     types = None
 
+
 # =========================================================
 # 網頁設定
 # =========================================================
 
 st.set_page_config(
-    page_title="AI 蝦皮半自動化 2.5 PRO",
+    page_title="AI 蝦皮半自動化 2.5 PRO｜Kling",
     page_icon="🛒",
     layout="wide",
 )
+
 
 APP_NAME = "AI 蝦皮半自動化 2.5 PRO"
 
@@ -56,7 +78,6 @@ MEMBERS_FILE = os.path.join(DATA_DIR, "members.json")
 MAX_IMAGE_SIZE = 1600
 MAX_IMAGE_MB = 20
 
-# 影片本身可以較大；真正限制仍受 Streamlit Cloud / 主機設定影響
 MAX_VIDEO_MB = 300
 
 DEFAULT_MEMBER_DAYS = 30
@@ -64,11 +85,46 @@ DEFAULT_MEMBER_DAYS = 30
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "admin123"
 
+
+# =========================================================
+# Gemini 模型
+# =========================================================
+
 GEMINI_MODEL_CANDIDATES = [
     "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
 ]
+
+
+# =========================================================
+# Kling 設定
+# =========================================================
+
+KLING_BASE_URL = "https://api-singapore.klingai.com"
+
+KLING_IMAGE_TO_VIDEO_PATH = (
+    "/kling/image-to-video/kling-3.0-turbo"
+)
+
+KLING_TASKS_PATH = "/kling/tasks"
+
+KLING_MODEL_NAME = "kling-3.0-turbo"
+
+KLING_DEFAULT_RESOLUTION = "1080p"
+
+KLING_DEFAULT_DURATION = 10
+
+KLING_DEFAULT_ASPECT_RATIO = "9:16"
+
+KLING_POLL_SECONDS = 5
+
+KLING_MAX_WAIT_SECONDS = 600
+
+
+# =========================================================
+# 影片 MIME
+# =========================================================
 
 VIDEO_MIME_MAP = {
     ".mp4": "video/mp4",
@@ -82,7 +138,9 @@ VIDEO_TYPE_MAP = {
     "webm": "video/webm",
 }
 
+
 os.makedirs(DATA_DIR, exist_ok=True)
+
 
 # =========================================================
 # CSS
@@ -91,6 +149,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 st.markdown(
     """
     <style>
+
     .main-title {
         text-align: center;
         font-size: 42px;
@@ -125,27 +184,29 @@ st.markdown(
         font-size: 14px;
     }
 
-    .upload-success {
-        padding: 12px 16px;
-        border-radius: 10px;
-        border: 1px solid rgba(0, 180, 100, .35);
-        margin: 10px 0;
-    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
 
 # =========================================================
 # 會員資料
 # =========================================================
 
 def load_members():
+
     if not os.path.exists(MEMBERS_FILE):
         return []
 
     try:
-        with open(MEMBERS_FILE, "r", encoding="utf-8") as f:
+
+        with open(
+            MEMBERS_FILE,
+            "r",
+            encoding="utf-8",
+        ) as f:
+
             data = json.load(f)
 
         if isinstance(data, list):
@@ -158,9 +219,18 @@ def load_members():
 
 
 def save_members(members):
-    os.makedirs(DATA_DIR, exist_ok=True)
 
-    with open(MEMBERS_FILE, "w", encoding="utf-8") as f:
+    os.makedirs(
+        DATA_DIR,
+        exist_ok=True,
+    )
+
+    with open(
+        MEMBERS_FILE,
+        "w",
+        encoding="utf-8",
+    ) as f:
+
         json.dump(
             members,
             f,
@@ -174,6 +244,7 @@ def save_members(members):
 # =========================================================
 
 def hash_password(password):
+
     salt = secrets.token_hex(16)
 
     digest = hashlib.sha256(
@@ -183,9 +254,17 @@ def hash_password(password):
     return f"{salt}${digest}"
 
 
-def verify_password(password, saved_value):
+def verify_password(
+    password,
+    saved_value,
+):
+
     try:
-        salt, saved_hash = saved_value.split("$", 1)
+
+        salt, saved_hash = saved_value.split(
+            "$",
+            1,
+        )
 
         digest = hashlib.sha256(
             (salt + password).encode("utf-8")
@@ -197,68 +276,116 @@ def verify_password(password, saved_value):
         )
 
     except Exception:
+
         return False
 
 
 # =========================================================
-# 管理員初始化
+# 管理員
 # =========================================================
 
 def ensure_admin():
+
     members = load_members()
 
     for member in members:
-        if member.get("username") == ADMIN_USERNAME:
+
+        if (
+            member.get("username")
+            == ADMIN_USERNAME
+        ):
             return
 
     admin = {
+
         "id": secrets.token_hex(8),
+
         "username": ADMIN_USERNAME,
-        "password_hash": hash_password(ADMIN_PASSWORD),
+
+        "password_hash":
+            hash_password(
+                ADMIN_PASSWORD
+            ),
+
         "name": "系統管理員",
+
         "email": "",
+
         "role": "admin",
+
         "status": "active",
-        "expires": (
-            date.today() + timedelta(days=3650)
-        ).isoformat(),
-        "created_at": datetime.now().isoformat(),
+
+        "expires":
+            (
+                date.today()
+                + timedelta(days=3650)
+            ).isoformat(),
+
+        "created_at":
+            datetime.now().isoformat(),
+
     }
 
     members.append(admin)
+
     save_members(members)
 
 
 ensure_admin()
+
 
 # =========================================================
 # 會員查詢
 # =========================================================
 
 def find_member(username):
-    username = str(username).strip().lower()
+
+    username = (
+        str(username)
+        .strip()
+        .lower()
+    )
 
     for member in load_members():
+
         if (
-            str(member.get("username", "")).lower()
+            str(
+                member.get(
+                    "username",
+                    "",
+                )
+            ).lower()
             == username
         ):
+
             return member
 
     return None
 
 
 def find_member_by_email(email):
-    email = str(email).strip().lower()
+
+    email = (
+        str(email)
+        .strip()
+        .lower()
+    )
 
     if not email:
         return None
 
     for member in load_members():
+
         if (
-            str(member.get("email", "")).lower()
+            str(
+                member.get(
+                    "email",
+                    "",
+                )
+            ).lower()
             == email
         ):
+
             return member
 
     return None
@@ -268,35 +395,69 @@ def find_member_by_email(email):
 # 建立會員
 # =========================================================
 
-def create_member(username, password, name, email):
-    username = str(username).strip().lower()
-    email = str(email).strip().lower()
+def create_member(
+    username,
+    password,
+    name,
+    email,
+):
+
+    username = (
+        str(username)
+        .strip()
+        .lower()
+    )
+
+    email = (
+        str(email)
+        .strip()
+        .lower()
+    )
 
     if find_member(username):
+
         return False, "帳號已存在。"
 
     if email and find_member_by_email(email):
+
         return False, "Email 已註冊。"
 
     expires = (
         date.today()
-        + timedelta(days=DEFAULT_MEMBER_DAYS)
+        + timedelta(
+            days=DEFAULT_MEMBER_DAYS
+        )
     ).isoformat()
 
     member = {
+
         "id": secrets.token_hex(8),
+
         "username": username,
-        "password_hash": hash_password(password),
-        "name": str(name).strip(),
+
+        "password_hash":
+            hash_password(password),
+
+        "name":
+            str(name).strip(),
+
         "email": email,
+
         "role": "member",
+
         "status": "active",
+
         "expires": expires,
-        "created_at": datetime.now().isoformat(),
+
+        "created_at":
+            datetime.now().isoformat(),
+
     }
 
     members = load_members()
+
     members.append(member)
+
     save_members(members)
 
     return True, member
@@ -306,13 +467,21 @@ def create_member(username, password, name, email):
 # 更新會員
 # =========================================================
 
-def update_member(member_id, updates):
+def update_member(
+    member_id,
+    updates,
+):
+
     members = load_members()
 
     for member in members:
+
         if member.get("id") == member_id:
+
             member.update(updates)
+
             save_members(members)
+
             return True
 
     return False
@@ -322,68 +491,126 @@ def update_member(member_id, updates):
 # 登入
 # =========================================================
 
-def check_login(username, password):
+def check_login(
+    username,
+    password,
+):
+
     member = find_member(username)
 
     if not member:
         return False, "invalid"
 
     status = str(
-        member.get("status", "active")
+        member.get(
+            "status",
+            "active",
+        )
     ).lower()
 
     if status != "active":
         return False, "disabled"
 
     saved_hash = str(
-        member.get("password_hash", "")
+        member.get(
+            "password_hash",
+            "",
+        )
     )
 
     if not saved_hash:
         return False, "invalid"
 
-    if not verify_password(password, saved_hash):
+    if not verify_password(
+        password,
+        saved_hash,
+    ):
+
         return False, "invalid"
 
     expires_text = str(
-        member.get("expires", "")
+        member.get(
+            "expires",
+            "",
+        )
     )
 
     try:
-        expires_date = date.fromisoformat(expires_text)
+
+        expires_date = date.fromisoformat(
+            expires_text
+        )
+
     except Exception:
+
         return False, "invalid_date"
 
     if date.today() > expires_date:
+
         return False, "expired"
 
     return True, member
 
 
 # =========================================================
-# Session State
+# Session
 # =========================================================
 
 DEFAULT_SESSION_VALUES = {
+
     "logged_in": False,
+
     "page": "login",
+
     "username": "",
+
     "member": {},
+
     "analysis_result": "",
+
     "analysis_mode": "",
+
     "gemini_model": "",
+
     "gemini_error": "",
+
     "last_product_name": "",
 
-    # 影片中心
-    "last_video_name": "",
-    "last_video_bytes": None,
-    "last_video_mime": "video/mp4",
-    "last_video_ext": ".mp4",
+    # Kling
+    "kling_task_id": "",
+
+    "kling_external_task_id": "",
+
+    "kling_status": "",
+
+    "kling_prompt": "",
+
+    "kling_video_url": "",
+
+    "kling_video_bytes": None,
+
+    "kling_video_name": "",
+
+    "kling_video_mime": "video/mp4",
+
+    # 上傳影片
+    "uploaded_video_bytes": None,
+
+    "uploaded_video_name": "",
+
+    "uploaded_video_mime": "video/mp4",
+
+    "uploaded_video_ext": ".mp4",
+
+    "uploaded_video_signature": "",
+
 }
 
+
 for key, value in DEFAULT_SESSION_VALUES.items():
+
     if key not in st.session_state:
+
         st.session_state[key] = value
 
 
@@ -392,47 +619,55 @@ for key, value in DEFAULT_SESSION_VALUES.items():
 # =========================================================
 
 def logout():
-    st.session_state.logged_in = False
-    st.session_state.username = ""
-    st.session_state.member = {}
 
-    st.session_state.analysis_result = ""
-    st.session_state.analysis_mode = ""
-    st.session_state.gemini_model = ""
-    st.session_state.gemini_error = ""
+    for key, value in DEFAULT_SESSION_VALUES.items():
 
-    st.session_state.last_product_name = ""
-    st.session_state.last_video_name = ""
-    st.session_state.last_video_bytes = None
-    st.session_state.last_video_mime = "video/mp4"
-    st.session_state.last_video_ext = ".mp4"
+        st.session_state[key] = value
 
-    st.session_state.page = "login"
     st.rerun()
 
 
 # =========================================================
-# Gemini API Key
+# Secrets
 # =========================================================
 
-def get_gemini_api_key():
-    api_key = ""
+def get_secret(name):
+
+    value = ""
 
     try:
-        api_key = st.secrets.get(
-            "GEMINI_API_KEY",
+
+        value = st.secrets.get(
+            name,
             "",
         )
+
     except Exception:
-        api_key = ""
 
-    if not api_key:
-        api_key = os.getenv(
-            "GEMINI_API_KEY",
+        value = ""
+
+    if not value:
+
+        value = os.getenv(
+            name,
             "",
         )
 
-    return str(api_key).strip()
+    return str(value).strip()
+
+
+def get_gemini_api_key():
+
+    return get_secret(
+        "GEMINI_API_KEY"
+    )
+
+
+def get_kling_api_key():
+
+    return get_secret(
+        "KLING_API_KEY"
+    )
 
 
 # =========================================================
@@ -441,13 +676,16 @@ def get_gemini_api_key():
 
 @st.cache_resource
 def get_gemini_client(api_key):
+
     if not api_key:
         return None
 
     if genai is None:
         return None
 
-    return genai.Client(api_key=api_key)
+    return genai.Client(
+        api_key=api_key
+    )
 
 
 # =========================================================
@@ -455,68 +693,58 @@ def get_gemini_client(api_key):
 # =========================================================
 
 def explain_gemini_error(error):
+
     text = str(error)
+
     lower = text.lower()
 
     if (
         "404" in lower
         or "not_found" in lower
         or "not found" in lower
-        or "no longer available" in lower
     ):
+
         return (
             "Gemini 模型無法使用。\n\n"
-            "系統會自動嘗試下一個模型。\n\n"
             f"原始錯誤：{text}"
         )
 
     if (
         "401" in lower
-        or (
-            "api key" in lower
-            and "invalid" in lower
-        )
+        or "invalid" in lower
+        and "api key" in lower
     ):
+
         return (
             "Gemini API Key 無效。\n\n"
-            "請檢查 Streamlit Secrets：\n"
-            "GEMINI_API_KEY\n\n"
             f"原始錯誤：{text}"
         )
 
     if "403" in lower:
+
         return (
             "Gemini API 權限不足。\n\n"
-            "請確認 Google AI Studio API Key。\n\n"
             f"原始錯誤：{text}"
         )
 
     if (
         "429" in lower
         or "quota" in lower
-        or "resource exhausted" in lower
     ):
+
         return (
             "Gemini API 額度或速率限制。\n\n"
-            "請稍後再試。\n\n"
-            f"原始錯誤：{text}"
-        )
-
-    if "400" in lower:
-        return (
-            "Gemini API 請求格式錯誤。\n\n"
-            "請確認 google-genai 套件版本。\n\n"
             f"原始錯誤：{text}"
         )
 
     return (
         "Gemini API 呼叫失敗。\n\n"
-        f"詳細錯誤：{text}"
+        f"{text}"
     )
 
 
 # =========================================================
-# Gemini API
+# Gemini
 # =========================================================
 
 def call_gemini(
@@ -524,31 +752,29 @@ def call_gemini(
     image_bytes=None,
     mime_type="image/jpeg",
 ):
+
     api_key = get_gemini_api_key()
 
     if not api_key:
+
         raise RuntimeError(
-            "找不到 GEMINI_API_KEY。\n\n"
-            "請在 Streamlit Secrets 設定：\n"
-            'GEMINI_API_KEY = "你的 Gemini API Key"'
+            "找不到 GEMINI_API_KEY。"
         )
 
     if genai is None:
+
         raise RuntimeError(
             "尚未安裝 google-genai。\n\n"
             "requirements.txt 請加入：\n"
             "google-genai"
         )
 
-    if types is None:
-        raise RuntimeError(
-            "google.genai.types 無法載入。\n\n"
-            "請更新 google-genai。"
-        )
-
-    client = get_gemini_client(api_key)
+    client = get_gemini_client(
+        api_key
+    )
 
     if client is None:
+
         raise RuntimeError(
             "Gemini Client 建立失敗。"
         )
@@ -556,46 +782,67 @@ def call_gemini(
     errors = []
 
     for model_name in GEMINI_MODEL_CANDIDATES:
+
         try:
+
             contents = []
 
             if image_bytes:
-                image_part = types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type=mime_type,
+
+                image_part = (
+                    types.Part.from_bytes(
+                        data=image_bytes,
+                        mime_type=mime_type,
+                    )
                 )
-                contents.append(image_part)
+
+                contents.append(
+                    image_part
+                )
 
             contents.append(prompt)
 
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
+            response = (
+                client
+                .models
+                .generate_content(
+                    model=model_name,
+                    contents=contents,
+                )
             )
 
-            text = getattr(response, "text", None)
+            text = getattr(
+                response,
+                "text",
+                None,
+            )
 
             if not text:
+
                 raise RuntimeError(
                     "Gemini 回傳成功，但沒有文字內容。"
                 )
 
-            st.session_state.gemini_model = model_name
+            st.session_state.gemini_model = (
+                model_name
+            )
+
             return str(text)
 
         except Exception as error:
+
             error_text = str(error)
-            lower = error_text.lower()
 
             errors.append(
                 f"{model_name}: {error_text}"
             )
 
+            lower = error_text.lower()
+
             model_error = (
                 "404" in lower
                 or "not_found" in lower
                 or "not found" in lower
-                or "no longer available" in lower
             )
 
             if model_error:
@@ -606,7 +853,7 @@ def call_gemini(
             )
 
     raise RuntimeError(
-        "目前設定的 Gemini 模型都無法使用。\n\n"
+        "Gemini 模型全部失敗。\n\n"
         + "\n\n".join(errors)
     )
 
@@ -616,461 +863,1223 @@ def call_gemini(
 # =========================================================
 
 def prepare_image(uploaded_file):
+
     if uploaded_file is None:
-        raise ValueError("沒有收到圖片檔案。")
+
+        raise ValueError(
+            "沒有收到圖片。"
+        )
+
+    raw_bytes = uploaded_file.getvalue()
+
+    if not raw_bytes:
+
+        raise ValueError(
+            "圖片檔案內容是空的。"
+        )
+
+    size_mb = (
+        len(raw_bytes)
+        / 1024
+        / 1024
+    )
+
+    if size_mb > MAX_IMAGE_MB:
+
+        raise ValueError(
+            f"圖片 {size_mb:.1f} MB，"
+            f"超過 {MAX_IMAGE_MB} MB。"
+        )
 
     try:
-        raw_bytes = uploaded_file.getvalue()
 
-        if not raw_bytes:
-            raise ValueError("圖片檔案內容是空的。")
+        image = Image.open(
+            io.BytesIO(raw_bytes)
+        )
 
-        file_size_mb = len(raw_bytes) / 1024 / 1024
+        image = ImageOps.exif_transpose(
+            image
+        )
 
-        if file_size_mb > MAX_IMAGE_MB:
-            raise ValueError(
-                f"圖片太大，目前為 {file_size_mb:.1f} MB，"
-                f"請使用 {MAX_IMAGE_MB} MB 以下圖片。"
-            )
-
-        image = Image.open(io.BytesIO(raw_bytes))
-        image = ImageOps.exif_transpose(image)
         image.load()
 
-        if image.mode not in ("RGB", "RGBA"):
-            image = image.convert("RGB")
-
-        image.thumbnail(
-            (MAX_IMAGE_SIZE, MAX_IMAGE_SIZE),
-            Image.Resampling.LANCZOS,
-        )
-
-        if image.mode == "RGBA":
-            background = Image.new(
-                "RGB",
-                image.size,
-                "white",
-            )
-            background.paste(
-                image,
-                mask=image.getchannel("A"),
-            )
-            image = background
-        else:
-            image = image.convert("RGB")
-
-        buffer = io.BytesIO()
-
-        image.save(
-            buffer,
-            format="JPEG",
-            quality=92,
-            optimize=True,
-        )
-
-        return image, buffer.getvalue()
-
     except Exception as error:
+
         raise ValueError(
-            "無法讀取這張圖片。\n\n"
-            "請確認 JPG、JPEG、PNG 或 WEBP。\n\n"
-            f"詳細錯誤：{error}"
+            f"無法讀取圖片：{error}"
         )
 
+    if image.mode not in (
+        "RGB",
+        "RGBA",
+    ):
+
+        image = image.convert(
+            "RGB"
+        )
+
+    image.thumbnail(
+        (
+            MAX_IMAGE_SIZE,
+            MAX_IMAGE_SIZE,
+        ),
+        Image.Resampling.LANCZOS,
+    )
+
+    if image.mode == "RGBA":
+
+        background = Image.new(
+            "RGB",
+            image.size,
+            "white",
+        )
+
+        background.paste(
+            image,
+            mask=image.getchannel(
+                "A"
+            ),
+        )
+
+        image = background
+
+    else:
+
+        image = image.convert(
+            "RGB"
+        )
+
+    buffer = io.BytesIO()
+
+    image.save(
+        buffer,
+        format="JPEG",
+        quality=92,
+        optimize=True,
+    )
+
+    return (
+        image,
+        buffer.getvalue(),
+    )
+
 
 # =========================================================
-# 即夢 2.5 核心規則
+# Kling 商品影片核心規則
 # =========================================================
 
-JIMENG_25_CORE_RULES = """
-【即夢 AI 2.5 商品一致性核心規則】
+KLING_PRODUCT_RULES = """
 
-使用者上傳的商品圖片是唯一主要商品來源。
+PRODUCT IDENTITY LOCK:
 
-必須維持：
-- 原品牌
-- 原包裝
-- 原形狀
-- 原比例
-- 原顏色
-- 原材質
-- 原 Logo
-- 原標籤
-- 原印刷文字
-- 原包裝結構
+Use the uploaded product image as the ONLY main product reference.
 
-禁止：
-- 重新設計品牌
-- 重新設計包裝
-- 改變顏色
-- 改變瓶身
-- 改變盒身
-- 改變 Logo
-- 改變文字
-- 商品變形
-- 商品融化
-- 商品閃爍
-- 商品漂移
-- 商品突然變成其他商品
-- 多出第二個商品
-- 商品消失
+Preserve exactly:
 
-預設禁止：
-- 人物
-- 手
-- 主持人
-- 代言人
-- 模特兒
-- 人物拿商品
-- 人物遮擋商品
+- original brand
+- original packaging
+- original shape
+- original proportions
+- original colors
+- original material
+- original logo
+- original label
+- original printed text
+- original package structure
 
-禁止：
-- 浮水印
-- 假價格
-- 假折扣
-- 假贈品
-- 假認證
-- 未確認規格
-- 未確認功效
-- 未確認成分
-- 未確認產地
-- 未確認醫療效果
+The product must remain visually identical
+throughout the entire video.
 
-影片全程保持同一商品身份。
+Do NOT:
 
-推薦：
-slow cinematic push-in,
-subtle orbit movement,
-smooth camera movement,
-stable framing,
-premium commercial product photography.
+- redesign the package
+- change the brand
+- change the logo
+- change label text
+- change product color
+- change product shape
+- change product proportions
+- create a second product
+- duplicate the product
+- morph the product
+- melt the product
+- distort the package
+- make the product disappear
+- add fake claims
+- add fake prices
+- add fake discounts
+- add fake gifts
+- add fake certifications
+
+Default scene:
+
+No people.
+No hands.
+No influencer.
+No presenter.
+No model.
+No spokesperson.
+
+Premium commercial product photography.
+Photorealistic.
+Stable product identity.
+Smooth cinematic camera motion.
+No flicker.
+No warping.
+No text drift.
+No watermark.
 """
 
 
 # =========================================================
-# Gemini Prompt
+# Kling Prompt
 # =========================================================
 
-def build_gemini_prompt(
-    product_data,
-    selected_items,
+def build_kling_prompt(
+    product_name,
+    product_spec,
     target_platform,
 ):
-    name = product_data.get("商品名稱") or "待確認"
-    price = product_data.get("商品價格") or "待確認"
-    cost = product_data.get("商品成本") or "待確認"
-    commission = product_data.get("分潤比例") or "待確認"
-    sales = product_data.get("月銷量") or "待確認"
-    rating = product_data.get("商品評分") or "待確認"
-    url = product_data.get("商品連結") or "待確認"
-    spec = product_data.get("商品規格") or "待確認"
 
-    selected_text = "、".join(selected_items)
+    product_name = (
+        product_name.strip()
+        if product_name
+        else "the uploaded product"
+    )
+
+    product_spec = (
+        product_spec.strip()
+        if product_spec
+        else "unknown specifications"
+    )
 
     return f"""
-你現在是：
-「AI 蝦皮半自動化 2.5 PRO」
-的 Gemini AI 商品分析核心。
+Create a premium commercial vertical product video.
 
-你會收到：
-1. 使用者上傳的商品圖片
-2. 使用者填寫的商品資料
+MAIN PRODUCT:
+{product_name}
 
-請嚴格依照圖片與已提供資料分析。
-不要把猜測當成事實。
+KNOWN SPECIFICATION:
+{product_spec}
 
-==================================================
-【使用者資料】
-==================================================
-
-商品名稱：
-{name}
-
-商品價格：
-{price}
-
-商品成本：
-{cost}
-
-分潤比例：
-{commission}
-
-月銷量：
-{sales}
-
-商品評分：
-{rating}
-
-商品連結：
-{url}
-
-商品規格：
-{spec}
-
-目標平台：
+TARGET PLATFORM:
 {target_platform}
 
-使用功能：
-{selected_text}
+VIDEO:
+9:16 vertical.
+10 seconds.
+1080p.
+Photorealistic premium commercial product advertising.
 
-==================================================
-【核心規則】
-==================================================
+SCENE 1 — 0 to 3 seconds:
+Show the uploaded product clearly and centered.
+Use the uploaded product image as the exact first-frame reference.
+The original product must be immediately recognizable.
+Clean premium studio environment.
+Stable framing.
 
-1. 圖片中的商品是主要商品來源。
+SCENE 2 — 3 to 6 seconds:
+Slow cinematic push-in toward the product.
+Reveal packaging, material, surface details, logo and label.
+Keep the exact original product identity.
+Do not redesign or alter any printed information.
 
-2. 如果圖片與文字資料衝突：
-「⚠️ 資料衝突，請人工確認。」
+SCENE 3 — 6 to 8 seconds:
+Very subtle cinematic orbit movement around the product.
+The product remains stable and centered.
+Maintain exact proportions and packaging.
+No duplicate products.
 
-3. 不能自行創造：
-價格、折扣、贈品、認證、成分、產地、
-容量、功效、醫療效果、官方規格。
+SCENE 4 — 8 to 10 seconds:
+Smooth camera movement returns to a clean centered hero shot.
+Hold the product stable.
+Premium commercial ending.
 
-4. 圖片看不清楚：
-「無法從圖片確認，待人工確認。」
-
-5. 圖片有多個商品：
-選擇最大、最清楚、品牌辨識度最高的商品作為主商品，
-並說明判斷理由。
-
-6. 不能假裝知道官方商品資料。
-
-7. 不得誇大商品效果。
-
-8. 即夢 Prompt 必須維持：
-原商品外觀一致、原包裝一致、原 Logo 一致、
-原文字一致、原顏色一致、原比例一致。
-
-9. 預設禁止：
-人物、手、模特兒、主持人、代言人。
-
-10. 正式發布前必須人工確認。
-
-==================================================
-【輸出】
-==================================================
-
-# 🛒 AI 蝦皮半自動化 2.5 PRO
-
-## 1｜商品辨識
-請列出：
-- 商品名稱
-- 商品類型
-- 品牌
-- 顏色
-- 包裝
-- 外觀
-- 可確認規格
-- 無法確認資訊
-
-未知資訊：「待人工確認」
-
-## 2｜AI 選品分析
-分析：
-- 商品吸引力
-- 電商展示潛力
-- 短影音展示潛力
-- 內容製作潛力
-- 競爭程度
-- 內容製作難度
-- 合規風險
-- 推薦分數 0～100
-- 推薦等級
-- 原因
-
-不要假裝擁有即時市場數據。
-
-## 3｜蝦皮上架文案
-### 商品標題 3 組
-### 短描述
-### 完整商品描述
-### 商品特色
-### 使用方式
-### 保存方式
-### 注意事項
-### 搜尋關鍵字
-
-所有未知資訊不得自行補充。
-
-## 4｜TikTok 文案
-### 3 秒開場
-### 15 秒口播
-### 30 秒口播
-### TikTok 貼文
-### Hashtag
-### 行動引導
-
-## 5｜即夢 AI 2.5 生圖 Prompt
-### A｜1:1 蝦皮商品主圖
-輸出完整 English Prompt。
-要求：
-- 原商品一致
-- 原包裝一致
-- 原 Logo 一致
-- 原文字一致
-- 原顏色一致
-- 原比例一致
-- premium commercial product photography
-- realistic
-- sharp product details
-- clean background
-- studio lighting
-- no people
-
-### Negative Prompt
-
-### B｜9:16 TikTok 商品海報
-輸出完整 English Prompt。
-要求：
-- 9:16
-- vertical
-- premium commercial advertising
-- product centered
-- original product appearance
-- original packaging
-- original logo
-- original label
-- no people
-- no hands
-- no influencer
-- no watermark
-
-### Negative Prompt
-
-### C｜商品細節展示圖
-輸出完整 English Prompt。
-
-### Negative Prompt
-
-## 6｜即夢 AI 2.5 影片 Prompt
-輸出完整 English Prompt。
-
-規格：
-9:16 vertical video
-15 seconds
-commercial product video
-
-Scene 1：
-0–3 seconds
-Opening
-
-Scene 2：
-3–7 seconds
-Product detail
-
-Scene 3：
-7–12 seconds
-Camera movement + product showcase
-
-Scene 4：
-12–15 seconds
-Ending
-
-鏡頭：
+CAMERA:
 slow cinematic push-in,
 subtle orbit movement,
-smooth camera movement,
-stable framing.
+smooth camera motion,
+stable framing,
+controlled depth of field,
+professional commercial photography.
 
-商品全程：
+LIGHTING:
+premium studio lighting,
+soft realistic highlights,
+natural shadows,
+clean background,
+high-end product advertising.
+
+STRICT PRODUCT CONSISTENCY:
 same product identity,
 same packaging,
 same color,
+same shape,
+same proportions,
 same logo,
 same label,
-same proportions.
+same printed text,
+same material.
 
-## 7｜15 秒爆款帶貨影片 Prompt
-輸出完整 English Prompt。
+NEGATIVE:
+people,
+hands,
+human presenter,
+influencer,
+model,
+spokesperson,
+second product,
+duplicate product,
+wrong product,
+fake product,
+product deformation,
+package deformation,
+melting,
+floating package,
+warped logo,
+warped text,
+changing label,
+changing brand,
+changing color,
+changing shape,
+wrong price,
+fake discount,
+fake gift,
+fake certification,
+watermark,
+text drift,
+flicker,
+unstable object,
+low quality,
+cartoon,
+illustration,
+3D render,
+unrealistic product.
 
-0–3 seconds：
-強開場
-
-3–7 seconds：
-商品細節
-
-7–12 seconds：
-鏡頭運動＋產品展示
-
-12–15 seconds：
-商品穩定收尾
-
-禁止：
-- 商品變形
-- 商品消失
-- 新增第二商品
-- 人物
-- 手
-- 假價格
-- 假贈品
-- 假優惠
-- 假認證
-
-## 8｜分潤合規檢查
-逐項檢查：
-- 商品與圖片一致
-- 影片與商品一致
-- 文案與商品一致
-- 商品連結是否存在
-- 價格是否已確認
-- 規格是否已確認
-- 品牌是否已確認
-- 功效是否存在誇大
-- 是否存在假贈品
-- 是否存在假認證
-- 是否存在錯誤規格
-- 是否存在品牌誤判
-
-使用：
-✅ 通過
-⚠️ 需確認
-❌ 有問題
-
-## 9｜最終發布建議
-給出：
-- 是否建議製作
-- 推薦影片方向
-- 推薦主圖方向
-- 人工確認事項
-- 最後檢查清單
-
-最後一定輸出：
-「正式發布前仍需人工確認商品、
-價格、規格、品牌、庫存、
-商品頁與分潤資格。」
-
-==================================================
-【即夢核心規則】
-==================================================
-{JIMENG_25_CORE_RULES}
+{KLING_PRODUCT_RULES}
 """
 
 
 # =========================================================
-# Gemini 商品分析
+# 自動勾選
 # =========================================================
 
-def generate_gemini_ai(
-    product_data,
-    selected_items,
+def auto_select_features():
+
+    return [
+        "商品辨識",
+        "AI 選品分析",
+        "蝦皮上架文案",
+        "TikTok 文案",
+        "Kling AI 3.0 真生成影片",
+        "分潤合規檢查",
+        "完整流程",
+    ]
+
+
+# =========================================================
+# Kling 圖片 Base64
+# =========================================================
+
+def image_bytes_to_base64(
     image_bytes,
 ):
-    target_platform = product_data.get(
-        "目標平台",
-        "蝦皮",
+
+    return base64.b64encode(
+        image_bytes
+    ).decode("utf-8")
+
+
+# =========================================================
+# Kling Headers
+# =========================================================
+
+def kling_headers():
+
+    api_key = get_kling_api_key()
+
+    if not api_key:
+
+        raise RuntimeError(
+            "找不到 KLING_API_KEY。\n\n"
+            "請在 Streamlit Secrets 設定：\n"
+            'KLING_API_KEY = "你的 Kling API Key"'
+        )
+
+    return {
+        "Content-Type":
+            "application/json",
+
+        "Authorization":
+            f"Bearer {api_key}",
+    }
+
+
+# =========================================================
+# Kling 建立任務
+# =========================================================
+
+def kling_create_image_to_video(
+    image_bytes,
+    prompt,
+    resolution="1080p",
+    duration=10,
+    aspect_ratio="9:16",
+    watermark=False,
+):
+
+    if not image_bytes:
+
+        raise RuntimeError(
+            "Kling 沒有收到商品圖片。"
+        )
+
+    if not prompt:
+
+        raise RuntimeError(
+            "Kling Prompt 是空的。"
+        )
+
+    if duration not in range(
+        3,
+        16,
+    ):
+
+        duration = 10
+
+    image_base64 = image_bytes_to_base64(
+        image_bytes
     )
 
-    prompt = build_gemini_prompt(
-        product_data,
-        selected_items,
-        target_platform,
+    # =====================================================
+    # Kling 首幀
+    #
+    # 這裡使用 Base64，
+    # 不需要另外架圖片網址。
+    # =====================================================
+
+    payload = {
+
+        "contents": [
+
+            {
+                "type": "prompt",
+                "text": prompt,
+            },
+
+            {
+                "type": "first_frame",
+                "url": image_base64,
+            },
+
+        ],
+
+        "settings": {
+
+            "resolution": resolution,
+
+            "aspect_ratio":
+                aspect_ratio,
+
+            "duration":
+                duration,
+
+        },
+
+        "options": {
+
+            "external_task_id":
+                (
+                    "shopee_"
+                    + secrets.token_hex(12)
+                ),
+
+            "watermark_info": {
+
+                "enabled":
+                    watermark,
+
+            },
+
+        },
+
+    }
+
+    url = (
+        KLING_BASE_URL
+        + KLING_IMAGE_TO_VIDEO_PATH
     )
 
-    return call_gemini(
-        prompt=prompt,
-        image_bytes=image_bytes,
-        mime_type="image/jpeg",
+    response = requests.post(
+        url,
+        headers=kling_headers(),
+        json=payload,
+        timeout=120,
     )
+
+    if response.status_code >= 400:
+
+        raise RuntimeError(
+            "Kling 建立影片任務失敗。\n\n"
+            f"HTTP：{response.status_code}\n\n"
+            f"{response.text}"
+        )
+
+    try:
+
+        data = response.json()
+
+    except Exception:
+
+        raise RuntimeError(
+            "Kling 回傳不是有效 JSON：\n\n"
+            + response.text
+        )
+
+    if not isinstance(data, dict):
+
+        raise RuntimeError(
+            "Kling 回傳資料格式錯誤。"
+        )
+
+    data_block = data.get(
+        "data",
+        data,
+    )
+
+    task_id = (
+        data_block.get("id")
+        or data_block.get("task_id")
+        or data_block.get("taskId")
+    )
+
+    external_task_id = (
+        data_block.get(
+            "external_task_id"
+        )
+        or data_block.get(
+            "externalTaskId"
+        )
+        or payload["options"][
+            "external_task_id"
+        ]
+    )
+
+    if not task_id:
+
+        raise RuntimeError(
+            "Kling 沒有回傳 task ID。\n\n"
+            + json.dumps(
+                data,
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+
+    st.session_state.kling_task_id = (
+        str(task_id)
+    )
+
+    st.session_state.kling_external_task_id = (
+        str(external_task_id)
+    )
+
+    st.session_state.kling_status = (
+        str(
+            data_block.get(
+                "status",
+                data_block.get(
+                    "task_status",
+                    "submitted",
+                ),
+            )
+        )
+    )
+
+    return (
+        str(task_id),
+        str(external_task_id),
+        data,
+    )
+
+
+# =========================================================
+# 解析 Kling 回傳
+# =========================================================
+
+def recursive_find_video_url(
+    obj,
+):
+
+    if isinstance(obj, dict):
+
+        # 常見直接欄位
+        for key in [
+            "video_url",
+            "videoUrl",
+            "url",
+            "download_url",
+            "downloadUrl",
+        ]:
+
+            value = obj.get(key)
+
+            if (
+                isinstance(value, str)
+                and value.startswith(
+                    "http"
+                )
+            ):
+
+                if (
+                    ".mp4" in value.lower()
+                    or "video" in key.lower()
+                    or key.lower() == "url"
+                ):
+
+                    return value
+
+        # outputs
+        outputs = obj.get(
+            "outputs"
+        )
+
+        if isinstance(
+            outputs,
+            list,
+        ):
+
+            for item in outputs:
+
+                if isinstance(
+                    item,
+                    dict,
+                ):
+
+                    item_type = str(
+                        item.get(
+                            "type",
+                            "",
+                        )
+                    ).lower()
+
+                    url = item.get(
+                        "url"
+                    )
+
+                    if (
+                        isinstance(
+                            url,
+                            str,
+                        )
+                        and url.startswith(
+                            "http"
+                        )
+                    ):
+
+                        if (
+                            "video"
+                            in item_type
+                            or
+                            ".mp4"
+                            in url.lower()
+                        ):
+
+                            return url
+
+        # task_result
+        task_result = obj.get(
+            "task_result"
+        )
+
+        if task_result:
+
+            result = recursive_find_video_url(
+                task_result
+            )
+
+            if result:
+                return result
+
+        # data
+        for key, value in obj.items():
+
+            if key in [
+                "outputs",
+                "task_result",
+                "data",
+            ]:
+
+                result = recursive_find_video_url(
+                    value
+                )
+
+                if result:
+                    return result
+
+    elif isinstance(obj, list):
+
+        for item in obj:
+
+            result = recursive_find_video_url(
+                item
+            )
+
+            if result:
+                return result
+
+    return ""
+
+
+# =========================================================
+# Kling 查詢任務
+# =========================================================
+
+def kling_query_task(
+    task_id=None,
+    external_task_id=None,
+):
+
+    if not task_id and not external_task_id:
+
+        raise RuntimeError(
+            "缺少 Kling task ID。"
+        )
+
+    params = {}
+
+    if task_id:
+
+        params["task_ids"] = task_id
+
+    else:
+
+        params[
+            "external_task_ids"
+        ] = external_task_id
+
+    url = (
+        KLING_BASE_URL
+        + KLING_TASKS_PATH
+    )
+
+    response = requests.get(
+        url,
+        headers=kling_headers(),
+        params=params,
+        timeout=60,
+    )
+
+    if response.status_code >= 400:
+
+        raise RuntimeError(
+            "Kling 查詢任務失敗。\n\n"
+            f"HTTP：{response.status_code}\n\n"
+            f"{response.text}"
+        )
+
+    try:
+
+        return response.json()
+
+    except Exception:
+
+        raise RuntimeError(
+            "Kling 查詢回傳不是 JSON。\n\n"
+            + response.text
+        )
+
+
+# =========================================================
+# 狀態搜尋
+# =========================================================
+
+def recursive_find_status(
+    obj,
+):
+
+    possible_keys = [
+        "status",
+        "task_status",
+        "taskStatus",
+    ]
+
+    if isinstance(obj, dict):
+
+        for key in possible_keys:
+
+            value = obj.get(key)
+
+            if isinstance(
+                value,
+                str,
+            ):
+
+                normalized = (
+                    value
+                    .strip()
+                    .lower()
+                )
+
+                if normalized in [
+                    "submitted",
+                    "processing",
+                    "running",
+                    "queued",
+                    "succeeded",
+                    "success",
+                    "succeed",
+                    "failed",
+                    "failure",
+                    "cancelled",
+                    "canceled",
+                ]:
+
+                    return normalized
+
+        for value in obj.values():
+
+            result = recursive_find_status(
+                value
+            )
+
+            if result:
+                return result
+
+    elif isinstance(obj, list):
+
+        for item in obj:
+
+            result = recursive_find_status(
+                item
+            )
+
+            if result:
+                return result
+
+    return ""
+
+
+# =========================================================
+# Kling 等待生成
+# =========================================================
+
+def kling_wait_for_video(
+    task_id,
+    external_task_id,
+    max_wait_seconds=KLING_MAX_WAIT_SECONDS,
+):
+
+    started = time.time()
+
+    last_status = ""
+
+    while (
+        time.time() - started
+        < max_wait_seconds
+    ):
+
+        result = kling_query_task(
+            task_id=task_id,
+            external_task_id=None,
+        )
+
+        status = recursive_find_status(
+            result
+        )
+
+        if not status:
+
+            status = "processing"
+
+        if status != last_status:
+
+            st.session_state.kling_status = (
+                status
+            )
+
+            last_status = status
+
+        # 成功
+        if status in [
+            "succeeded",
+            "success",
+            "succeed",
+        ]:
+
+            video_url = (
+                recursive_find_video_url(
+                    result
+                )
+            )
+
+            if not video_url:
+
+                raise RuntimeError(
+                    "Kling 顯示生成成功，"
+                    "但沒有找到影片 URL。\n\n"
+                    + json.dumps(
+                        result,
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+
+            return (
+                video_url,
+                result,
+            )
+
+        # 失敗
+        if status in [
+            "failed",
+            "failure",
+            "cancelled",
+            "canceled",
+        ]:
+
+            raise RuntimeError(
+                "Kling 影片生成失敗。\n\n"
+                + json.dumps(
+                    result,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+
+        elapsed = int(
+            time.time() - started
+        )
+
+        remaining = max(
+            0,
+            max_wait_seconds
+            - elapsed,
+        )
+
+        st.info(
+            f"🎬 Kling 正在生成影片……"
+            f"\n\n"
+            f"狀態：`{status}`"
+            f"\n"
+            f"已等待：{elapsed} 秒"
+            f"\n"
+            f"最多等待：{max_wait_seconds} 秒"
+        )
+
+        time.sleep(
+            KLING_POLL_SECONDS
+        )
+
+    raise RuntimeError(
+        "Kling 影片生成等待逾時。\n\n"
+        f"Task ID：{task_id}\n"
+        "你可以稍後重新查詢任務。"
+    )
+
+
+# =========================================================
+# 下載 Kling 影片
+# =========================================================
+
+def download_kling_video(
+    video_url,
+):
+
+    response = requests.get(
+        video_url,
+        timeout=180,
+    )
+
+    if response.status_code >= 400:
+
+        raise RuntimeError(
+            "無法下載 Kling 生成影片。\n\n"
+            f"HTTP：{response.status_code}"
+        )
+
+    raw = response.content
+
+    if not raw:
+
+        raise RuntimeError(
+            "Kling 影片下載結果是空的。"
+        )
+
+    return raw
+
+
+# =========================================================
+# 自動完整 Kling 生成
+# =========================================================
+
+def generate_real_kling_video(
+    image_bytes,
+    product_name,
+    product_spec,
+    target_platform,
+    resolution,
+    duration,
+    aspect_ratio,
+    watermark,
+):
+
+    prompt = build_kling_prompt(
+        product_name=product_name,
+        product_spec=product_spec,
+        target_platform=target_platform,
+    )
+
+    st.session_state.kling_prompt = (
+        prompt
+    )
+
+    with st.spinner(
+        "🎬 正在建立 Kling 真影片生成任務……"
+    ):
+
+        (
+            task_id,
+            external_task_id,
+            create_response,
+        ) = kling_create_image_to_video(
+            image_bytes=image_bytes,
+            prompt=prompt,
+            resolution=resolution,
+            duration=duration,
+            aspect_ratio=aspect_ratio,
+            watermark=watermark,
+        )
+
+    st.success(
+        "✅ Kling 真影片任務已建立！"
+    )
+
+    st.code(
+        f"Task ID：{task_id}"
+    )
+
+    with st.spinner(
+        "🎬 Kling 正在真正生成影片，請稍候……"
+    ):
+
+        (
+            video_url,
+            query_response,
+        ) = kling_wait_for_video(
+            task_id=task_id,
+            external_task_id=external_task_id,
+        )
+
+    st.success(
+        "🎉 Kling 影片生成完成！"
+    )
+
+    with st.spinner(
+        "⬇️ 正在取得 Kling 影片……"
+    ):
+
+        video_bytes = (
+            download_kling_video(
+                video_url
+            )
+        )
+
+    st.session_state.kling_video_url = (
+        video_url
+    )
+
+    st.session_state.kling_video_bytes = (
+        video_bytes
+    )
+
+    st.session_state.kling_video_name = (
+        "Kling_3.0_Turbo_"
+        + datetime.now().strftime(
+            "%Y%m%d_%H%M%S"
+        )
+        + ".mp4"
+    )
+
+    st.session_state.kling_video_mime = (
+        "video/mp4"
+    )
+
+    st.session_state.kling_status = (
+        "succeeded"
+    )
+
+    return (
+        video_bytes,
+        video_url,
+    )
+
+
+# =========================================================
+# 影片 MIME
+# =========================================================
+
+def detect_video_mime(
+    filename,
+    browser_mime="",
+):
+
+    ext = os.path.splitext(
+        str(filename or "")
+    )[1].lower()
+
+    if ext in VIDEO_MIME_MAP:
+
+        return (
+            VIDEO_MIME_MAP[ext],
+            ext,
+        )
+
+    if browser_mime in (
+        VIDEO_TYPE_MAP.values()
+    ):
+
+        for suffix, mime in (
+            VIDEO_MIME_MAP.items()
+        ):
+
+            if mime == browser_mime:
+
+                return (
+                    mime,
+                    suffix,
+                )
+
+    return (
+        "video/mp4",
+        ".mp4",
+    )
+
+
+# =========================================================
+# 使用者上傳影片
+# =========================================================
+
+def save_uploaded_video(
+    video_file,
+):
+
+    raw = video_file.getvalue()
+
+    if not raw:
+
+        raise ValueError(
+            "影片檔案內容是空的。"
+        )
+
+    size_mb = (
+        len(raw)
+        / 1024
+        / 1024
+    )
+
+    if size_mb > MAX_VIDEO_MB:
+
+        raise ValueError(
+            f"影片 {size_mb:.1f} MB，"
+            f"超過 {MAX_VIDEO_MB} MB。"
+        )
+
+    mime, ext = detect_video_mime(
+        video_file.name,
+        video_file.type or "",
+    )
+
+    signature = hashlib.sha256(
+        raw
+    ).hexdigest()
+
+    # 防止同一檔案重複寫入
+    if (
+        st.session_state.uploaded_video_signature
+        != signature
+    ):
+
+        st.session_state.uploaded_video_bytes = (
+            raw
+        )
+
+        st.session_state.uploaded_video_name = (
+            video_file.name
+        )
+
+        st.session_state.uploaded_video_mime = (
+            mime
+        )
+
+        st.session_state.uploaded_video_ext = (
+            ext
+        )
+
+        st.session_state.uploaded_video_signature = (
+            signature
+        )
+
+    return (
+        raw,
+        mime,
+        ext,
+        size_mb,
+    )
+
+
+# =========================================================
+# 清除使用者影片
+# =========================================================
+
+def clear_uploaded_video():
+
+    st.session_state.uploaded_video_bytes = (
+        None
+    )
+
+    st.session_state.uploaded_video_name = (
+        ""
+    )
+
+    st.session_state.uploaded_video_mime = (
+        "video/mp4"
+    )
+
+    st.session_state.uploaded_video_ext = (
+        ".mp4"
+    )
+
+    st.session_state.uploaded_video_signature = (
+        ""
+    )
+
+
+# =========================================================
+# 清除 Kling 生成影片
+# =========================================================
+
+def clear_kling_video():
+
+    st.session_state.kling_video_url = ""
+
+    st.session_state.kling_video_bytes = (
+        None
+    )
+
+    st.session_state.kling_video_name = ""
+
+    st.session_state.kling_video_mime = (
+        "video/mp4"
+    )
+
+    st.session_state.kling_task_id = ""
+
+    st.session_state.kling_external_task_id = ""
+
+    st.session_state.kling_status = ""
+
+    st.session_state.kling_prompt = ""
 
 
 # =========================================================
@@ -1078,31 +2087,39 @@ def generate_gemini_ai(
 # =========================================================
 
 def login_page():
+
     st.markdown(
-        '<div class="main-title">🛒 AI 蝦皮半自動化 2.5 PRO</div>',
+        '<div class="main-title">'
+        '🛒 AI 蝦皮半自動化 2.5 PRO'
+        '</div>',
         unsafe_allow_html=True,
     )
 
     st.markdown(
-        '<div class="main-subtitle">會員登入｜Gemini AI 商品分析｜即夢 AI 2.5</div>',
+        '<div class="main-subtitle">'
+        'Gemini AI｜Kling 真生成影片'
+        '</div>',
         unsafe_allow_html=True,
     )
 
-    _, center, _ = st.columns([1, 2, 1])
+    _, center, _ = st.columns(
+        [1, 2, 1]
+    )
 
     with center:
-        st.subheader("🔐 會員登入")
+
+        st.subheader(
+            "🔐 會員登入"
+        )
 
         username = st.text_input(
             "會員帳號",
-            placeholder="輸入會員帳號",
             key="login_username",
         )
 
         password = st.text_input(
             "會員密碼",
             type="password",
-            placeholder="輸入會員密碼",
             key="login_password",
         )
 
@@ -1111,28 +2128,56 @@ def login_page():
             type="primary",
             use_container_width=True,
         ):
+
             if not username or not password:
-                st.error("請輸入會員帳號與密碼。")
+
+                st.error(
+                    "請輸入帳號與密碼。"
+                )
+
             else:
-                success, result = check_login(
-                    username,
-                    password,
+
+                success, result = (
+                    check_login(
+                        username,
+                        password,
+                    )
                 )
 
                 if success:
-                    st.session_state.logged_in = True
+
+                    st.session_state.logged_in = (
+                        True
+                    )
+
                     st.session_state.username = (
                         username.strip().lower()
                     )
-                    st.session_state.member = result
-                    st.session_state.page = "main"
+
+                    st.session_state.member = (
+                        result
+                    )
+
+                    st.session_state.page = (
+                        "main"
+                    )
+
                     st.rerun()
 
                 messages = {
-                    "expired": "⛔ 會員資格已到期。",
-                    "disabled": "⛔ 此會員帳號目前已停權。",
-                    "invalid_date": "⛔ 會員到期日資料錯誤。",
-                    "invalid": "❌ 帳號或密碼錯誤。",
+
+                    "expired":
+                        "⛔ 會員資格已到期。",
+
+                    "disabled":
+                        "⛔ 帳號已停權。",
+
+                    "invalid_date":
+                        "⛔ 到期日資料錯誤。",
+
+                    "invalid":
+                        "❌ 帳號或密碼錯誤。",
+
                 }
 
                 st.error(
@@ -1145,58 +2190,60 @@ def login_page():
         st.divider()
 
         if st.button(
-            "📝 還沒有帳號？註冊會員",
+            "📝 註冊會員",
             use_container_width=True,
         ):
-            st.session_state.page = "register"
+
+            st.session_state.page = (
+                "register"
+            )
+
             st.rerun()
 
-        st.divider()
+        with st.expander(
+            "🔐 管理員測試帳號"
+        ):
 
-        st.caption(
-            "本系統使用本機會員帳號＋Gemini API。"
-        )
-
-        with st.expander("🔐 管理員測試帳號"):
             st.code(
-                "帳號：admin\n密碼：admin123"
+                "帳號：admin\n"
+                "密碼：admin123"
             )
 
 
 # =========================================================
-# 註冊頁
+# 註冊
 # =========================================================
 
 def register_page():
+
     st.markdown(
-        '<div class="main-title">📝 會員註冊</div>',
+        '<div class="main-title">'
+        '📝 會員註冊'
+        '</div>',
         unsafe_allow_html=True,
     )
 
-    _, center, _ = st.columns([1, 2, 1])
+    _, center, _ = st.columns(
+        [1, 2, 1]
+    )
 
     with center:
-        st.subheader("👤 建立會員帳號")
 
         name = st.text_input(
-            "姓名 / 暱稱",
-            placeholder="例如：王小明",
+            "姓名 / 暱稱"
         )
 
         email = st.text_input(
-            "Email",
-            placeholder="example@gmail.com",
+            "Email"
         )
 
         username = st.text_input(
-            "會員帳號",
-            placeholder="3～30 個英數字或底線",
+            "會員帳號"
         )
 
         password = st.text_input(
             "會員密碼",
             type="password",
-            placeholder="至少 6 個字元",
         )
 
         password_confirm = st.text_input(
@@ -1205,48 +2252,86 @@ def register_page():
         )
 
         if st.button(
-            "🚀 建立會員帳號",
+            "🚀 建立會員",
             type="primary",
             use_container_width=True,
         ):
-            username_clean = username.strip().lower()
-            email_clean = email.strip().lower()
+
+            username_clean = (
+                username
+                .strip()
+                .lower()
+            )
+
+            email_clean = (
+                email
+                .strip()
+                .lower()
+            )
 
             if not name.strip():
-                st.error("請輸入姓名或暱稱。")
+
+                st.error(
+                    "請輸入姓名。"
+                )
+
             elif not re.fullmatch(
                 r"[^@\s]+@[^@\s]+\.[^@\s]+",
                 email_clean,
             ):
-                st.error("請輸入正確 Email。")
+
+                st.error(
+                    "Email 格式錯誤。"
+                )
+
             elif not re.fullmatch(
                 r"[a-z0-9_]{3,30}",
                 username_clean,
             ):
+
                 st.error(
                     "帳號只能使用小寫英數字與底線。"
                 )
+
             elif len(password) < 6:
-                st.error("密碼至少 6 個字元。")
+
+                st.error(
+                    "密碼至少 6 個字元。"
+                )
+
             elif password != password_confirm:
-                st.error("兩次密碼不一致。")
+
+                st.error(
+                    "兩次密碼不一致。"
+                )
+
             else:
-                success, result = create_member(
-                    username_clean,
-                    password,
-                    name,
-                    email_clean,
+
+                success, result = (
+                    create_member(
+                        username_clean,
+                        password,
+                        name,
+                        email_clean,
+                    )
                 )
 
                 if success:
+
                     st.success(
-                        "🎉 會員帳號建立成功！"
+                        "🎉 會員建立成功！"
                     )
+
                     st.info(
-                        f"會員資格預設 {DEFAULT_MEMBER_DAYS} 天。"
+                        f"預設會員期限："
+                        f"{DEFAULT_MEMBER_DAYS} 天"
                     )
+
                 else:
-                    st.error(str(result))
+
+                    st.error(
+                        str(result)
+                    )
 
         st.divider()
 
@@ -1254,44 +2339,61 @@ def register_page():
             "⬅️ 返回登入",
             use_container_width=True,
         ):
-            st.session_state.page = "login"
+
+            st.session_state.page = (
+                "login"
+            )
+
             st.rerun()
 
 
 # =========================================================
-# 未登入
+# 登入控制
 # =========================================================
 
 if not st.session_state.logged_in:
-    if st.session_state.page == "register":
+
+    if (
+        st.session_state.page
+        == "register"
+    ):
+
         register_page()
+
     else:
+
         login_page()
 
     st.stop()
 
 
 # =========================================================
-# 目前會員
+# 會員資訊
 # =========================================================
 
-current_username = st.session_state.get(
-    "username",
-    "",
+current_username = (
+    st.session_state.username
 )
 
-current_member = st.session_state.get(
-    "member",
-    {},
+current_member = (
+    st.session_state.member
 )
 
-latest_member = find_member(current_username)
+latest_member = find_member(
+    current_username
+)
 
 if latest_member:
-    current_member = latest_member
-    st.session_state.member = latest_member
 
-member_id = current_member.get("id", "")
+    current_member = (
+        latest_member
+    )
+
+    st.session_state.member = (
+        latest_member
+    )
+
+
 member_name = str(
     current_member.get(
         "name",
@@ -1328,60 +2430,120 @@ member_expires = str(
 )
 
 try:
-    expire_date = date.fromisoformat(member_expires)
+
+    expire_date = date.fromisoformat(
+        member_expires
+    )
+
     remaining_days = (
-        expire_date - date.today()
+        expire_date
+        - date.today()
     ).days
+
 except Exception:
+
     remaining_days = -999
 
-if member_status.lower() != "active":
-    st.error("⛔ 此會員帳號目前已停權。")
-    if st.button("🚪 返回登入"):
+
+if member_status != "active":
+
+    st.error(
+        "⛔ 會員帳號已停權。"
+    )
+
+    if st.button(
+        "🚪 登出"
+    ):
+
         logout()
+
     st.stop()
 
+
 if remaining_days < 0:
-    st.error("⛔ 會員資格已到期。")
-    if st.button("🚪 返回登入"):
+
+    st.error(
+        "⛔ 會員資格已到期。"
+    )
+
+    if st.button(
+        "🚪 登出"
+    ):
+
         logout()
+
     st.stop()
 
 
 # =========================================================
-# 側邊欄
+# Sidebar
 # =========================================================
 
 with st.sidebar:
-    st.markdown("## 👤 會員中心")
 
-    st.success(f"會員：{member_name}")
+    st.markdown(
+        "## 👤 會員中心"
+    )
 
-    st.write(f"帳號：**{current_username}**")
+    st.success(
+        f"會員：{member_name}"
+    )
+
+    st.write(
+        f"帳號：**{current_username}**"
+    )
 
     if member_email:
-        st.write(f"Email：**{member_email}**")
 
-    st.write(f"等級：**{member_role}**")
-    st.write("登入方式：**本機會員＋Gemini API**")
-    st.write(f"到期日：**{member_expires}**")
+        st.write(
+            f"Email：**{member_email}**"
+        )
 
-    if remaining_days == 0:
-        st.warning("⚠️ 今天為最後使用日")
-    elif remaining_days <= 7:
-        st.warning(f"⚠️ 剩餘 {remaining_days} 天")
+    st.write(
+        f"等級：**{member_role}**"
+    )
+
+    st.write(
+        f"到期日：**{member_expires}**"
+    )
+
+    if remaining_days <= 7:
+
+        st.warning(
+            f"⚠️ 剩餘 {remaining_days} 天"
+        )
+
     else:
-        st.info(f"⏳ 剩餘 {remaining_days} 天")
+
+        st.info(
+            f"⏳ 剩餘 {remaining_days} 天"
+        )
 
     st.divider()
 
-    if st.session_state.gemini_model:
-        st.success("🟢 Gemini 已連線")
-        st.caption(
-            "模型：" + st.session_state.gemini_model
+    if get_kling_api_key():
+
+        st.success(
+            "🟢 Kling API Key 已設定"
         )
+
     else:
-        st.warning("🟡 Gemini 尚未執行")
+
+        st.error(
+            "🔴 Kling API Key 未設定"
+        )
+
+    if get_gemini_api_key():
+
+        st.success(
+            "🟢 Gemini API Key 已設定"
+        )
+
+    else:
+
+        st.warning(
+            "🟡 Gemini API Key 未設定"
+        )
 
     st.divider()
 
@@ -1389,6 +2551,7 @@ with st.sidebar:
         "🚪 登出",
         use_container_width=True,
     ):
+
         logout()
 
 
@@ -1397,7 +2560,10 @@ with st.sidebar:
 # =========================================================
 
 def admin_panel():
-    st.header("👑 管理員中心")
+
+    st.header(
+        "👑 管理員中心"
+    )
 
     members = load_members()
 
@@ -1406,32 +2572,82 @@ def admin_panel():
     )
 
     for member in members:
-        mid = member.get("id", "")
-        username = member.get("username", "")
-        name = member.get("name", "")
-        email = member.get("email", "")
-        role = member.get("role", "member")
-        status = member.get("status", "active")
-        expires = member.get("expires", "")
+
+        mid = member.get(
+            "id",
+            "",
+        )
+
+        username = member.get(
+            "username",
+            "",
+        )
+
+        name = member.get(
+            "name",
+            "",
+        )
+
+        email = member.get(
+            "email",
+            "",
+        )
+
+        role = member.get(
+            "role",
+            "member",
+        )
+
+        status = member.get(
+            "status",
+            "active",
+        )
+
+        expires = member.get(
+            "expires",
+            "",
+        )
 
         with st.expander(
             f"👤 {name}｜{username}"
         ):
-            st.write(f"Email：**{email}**")
-            st.write(f"身份：**{role}**")
-            st.write(f"狀態：**{status}**")
-            st.write(f"到期：**{expires}**")
+
+            st.write(
+                f"Email：**{email}**"
+            )
+
+            st.write(
+                f"身份：**{role}**"
+            )
+
+            st.write(
+                f"狀態：**{status}**"
+            )
+
+            st.write(
+                f"到期：**{expires}**"
+            )
 
             new_status = st.selectbox(
                 "會員狀態",
-                ["active", "disabled"],
+                [
+                    "active",
+                    "disabled",
+                ],
                 index=(
-                    0 if status == "active" else 1
+                    0
+                    if status
+                    == "active"
+                    else 1
                 ),
                 key=f"status_{mid}",
             )
 
-            roles = ["member", "vip", "admin"]
+            roles = [
+                "member",
+                "vip",
+                "admin",
+            ]
 
             new_role = st.selectbox(
                 "會員等級",
@@ -1445,9 +2661,18 @@ def admin_panel():
             )
 
             try:
-                expire_value = date.fromisoformat(expires)
+
+                expire_value = (
+                    date.fromisoformat(
+                        expires
+                    )
+                )
+
             except Exception:
-                expire_value = date.today()
+
+                expire_value = (
+                    date.today()
+                )
 
             new_expire = st.date_input(
                 "會員到期日",
@@ -1458,89 +2683,136 @@ def admin_panel():
             c1, c2, c3 = st.columns(3)
 
             with c1:
+
                 if st.button(
                     "💾 儲存",
                     key=f"save_{mid}",
                     use_container_width=True,
                 ):
+
                     update_member(
                         mid,
                         {
-                            "status": new_status,
-                            "role": new_role,
-                            "expires": new_expire.isoformat(),
+                            "status":
+                                new_status,
+
+                            "role":
+                                new_role,
+
+                            "expires":
+                                new_expire.isoformat(),
                         },
                     )
-                    st.success("已更新。")
+
+                    st.success(
+                        "已更新。"
+                    )
+
                     st.rerun()
 
             with c2:
+
                 if st.button(
                     "➕ 延長 30 天",
                     key=f"extend_{mid}",
                     use_container_width=True,
                 ):
+
                     try:
-                        d = date.fromisoformat(expires)
+
+                        d = date.fromisoformat(
+                            expires
+                        )
+
                     except Exception:
+
                         d = date.today()
 
                     if d < date.today():
+
                         d = date.today()
 
-                    new_date = d + timedelta(days=30)
+                    new_date = (
+                        d
+                        + timedelta(
+                            days=30
+                        )
+                    )
 
                     update_member(
                         mid,
                         {
-                            "expires": new_date.isoformat(),
-                            "status": "active",
+                            "expires":
+                                new_date.isoformat(),
+
+                            "status":
+                                "active",
                         },
                     )
+
                     st.success(
-                        "已延長至 " + new_date.isoformat()
+                        "已延長至 "
+                        + new_date.isoformat()
                     )
+
                     st.rerun()
 
             with c3:
+
                 if username != current_username:
+
                     if st.button(
                         "⛔ 停權",
                         key=f"disable_{mid}",
                         use_container_width=True,
                     ):
+
                         update_member(
                             mid,
-                            {"status": "disabled"},
+                            {
+                                "status":
+                                    "disabled"
+                            },
                         )
-                        st.warning("會員已停權。")
+
+                        st.warning(
+                            "會員已停權。"
+                        )
+
                         st.rerun()
 
 
 # =========================================================
-# 主標題
+# 標題
 # =========================================================
 
 st.markdown(
-    '<div class="main-title">🛒 AI 蝦皮半自動化 2.5 PRO</div>',
+    '<div class="main-title">'
+    '🛒 AI 蝦皮半自動化 2.5 PRO'
+    '</div>',
     unsafe_allow_html=True,
 )
 
 st.markdown(
     '<div class="main-subtitle">'
     'Gemini 商品辨識｜AI 選品｜蝦皮文案｜'
-    'TikTok｜即夢 AI 2.5｜影片中心｜分潤合規'
+    'TikTok｜Kling 3.0 Turbo 真生成影片｜'
+    '影片中心｜分潤合規'
     '</div>',
     unsafe_allow_html=True,
 )
 
 
 # =========================================================
-# 管理員中心
+# Admin
 # =========================================================
 
 if member_role.lower() == "admin":
-    with st.expander("👑 管理員中心"):
+
+    with st.expander(
+        "👑 管理員中心"
+    ):
+
         admin_panel()
 
     st.divider()
@@ -1550,298 +2822,578 @@ if member_role.lower() == "admin":
 # API 狀態
 # =========================================================
 
-with st.expander("🤖 Gemini API 狀態"):
-    api_key = get_gemini_api_key()
+with st.expander(
+    "🔌 AI API 狀態",
+    expanded=False,
+):
 
-    if genai is None:
-        st.error("❌ google-genai 尚未安裝。")
-        st.code("google-genai")
+    c1, c2 = st.columns(2)
 
-    elif not api_key:
-        st.error("❌ 找不到 GEMINI_API_KEY。")
-        st.info(
-            "請在 Streamlit Secrets 設定："
-        )
-        st.code(
-            'GEMINI_API_KEY = "你的 Gemini API Key"'
+    with c1:
+
+        st.subheader(
+            "🤖 Gemini"
         )
 
-    else:
-        st.success("✅ Gemini API Key 已讀取")
-        st.write("模型自動優先順序：")
+        if genai is None:
 
-        for index, model in enumerate(
-            GEMINI_MODEL_CANDIDATES,
-            start=1,
-        ):
-            st.write(f"{index}. `{model}`")
+            st.error(
+                "google-genai 未安裝"
+            )
 
-        st.caption(
-            "系統會自動跳過不可用模型。"
+        elif get_gemini_api_key():
+
+            st.success(
+                "Gemini API 已設定"
+            )
+
+        else:
+
+            st.warning(
+                "Gemini API Key 未設定"
+            )
+
+    with c2:
+
+        st.subheader(
+            "🎬 Kling"
         )
+
+        if get_kling_api_key():
+
+            st.success(
+                "Kling API 已設定"
+            )
+
+            st.write(
+                "模型："
+                f"`{KLING_MODEL_NAME}`"
+            )
+
+            st.write(
+                "解析度："
+                f"`{KLING_DEFAULT_RESOLUTION}`"
+            )
+
+            st.write(
+                "影片："
+                f"`{KLING_DEFAULT_DURATION} 秒`"
+            )
+
+            st.write(
+                "比例："
+                f"`{KLING_DEFAULT_ASPECT_RATIO}`"
+            )
+
+        else:
+
+            st.error(
+                "Kling API Key 未設定"
+            )
 
 
 # =========================================================
-# 1｜上傳商品圖片
+# 1 商品圖片
 # =========================================================
 
-st.subheader("1｜📷 上傳商品圖片")
+st.subheader(
+    "1｜📷 商品圖片"
+)
 
 uploaded_file = st.file_uploader(
-    "請選擇商品圖片",
-    type=["jpg", "jpeg", "png", "webp"],
+    "上傳商品圖片",
+    type=[
+        "jpg",
+        "jpeg",
+        "png",
+        "webp",
+    ],
     accept_multiple_files=False,
     key="product_image_uploader",
-    help="支援 JPG、JPEG、PNG、WEBP。",
 )
+
 
 prepared_image = None
 prepared_image_bytes = None
 
-if uploaded_file is not None:
+
+if uploaded_file:
+
     try:
-        prepared_image, prepared_image_bytes = prepare_image(
+
+        (
+            prepared_image,
+            prepared_image_bytes,
+        ) = prepare_image(
             uploaded_file
         )
 
         st.success(
-            "✅ 圖片已成功上傳：" + uploaded_file.name
+            "✅ 商品圖片已讀取"
         )
 
         st.image(
             prepared_image,
-            caption="Gemini 將使用這張圖片進行商品分析",
+            caption=(
+                "這張圖片會直接作為 "
+                "Kling 影片首幀商品來源"
+            ),
             use_container_width=True,
         )
 
     except Exception as error:
-        st.error("❌ 圖片讀取失敗。")
-        st.code(str(error))
+
+        st.error(
+            "❌ 圖片處理失敗"
+        )
+
+        st.code(
+            str(error)
+        )
 
 
 # =========================================================
-# 2｜商品資料
+# 2 商品資料
 # =========================================================
 
-st.subheader("2｜📦 商品資料")
+st.subheader(
+    "2｜📦 商品資料"
+)
 
 col1, col2 = st.columns(2)
 
 with col1:
+
     product_name = st.text_input(
         "商品名稱",
-        placeholder="不知道可留空",
+        placeholder="可留空，AI 會從圖片判斷",
         key="product_name",
     )
 
     product_price = st.text_input(
         "商品價格",
         placeholder="例如：399",
-        key="product_price",
     )
 
     product_cost = st.text_input(
         "商品成本",
         placeholder="例如：250",
-        key="product_cost",
     )
 
     commission_rate = st.text_input(
         "分潤比例",
         placeholder="例如：12%",
-        key="commission_rate",
     )
 
+
 with col2:
+
     monthly_sales = st.text_input(
         "月銷量",
         placeholder="例如：1500",
-        key="monthly_sales",
     )
 
     product_rating = st.text_input(
         "商品評分",
         placeholder="例如：4.8",
-        key="product_rating",
     )
 
     product_url = st.text_input(
         "商品連結",
         placeholder="可留空",
-        key="product_url",
     )
 
     product_spec = st.text_area(
         "商品規格",
-        placeholder="例如：300ml、單瓶、白色",
+        placeholder="可留空",
         height=130,
-        key="product_spec",
     )
 
 
 # =========================================================
-# 3｜平台
+# 3 平台
 # =========================================================
 
-st.subheader("3｜🎯 目標平台")
+st.subheader(
+    "3｜🎯 目標平台"
+)
 
 target_platform = st.radio(
-    "目標平台",
-    ["蝦皮", "TikTok", "蝦皮＋TikTok"],
+    "選擇平台",
+    [
+        "蝦皮",
+        "TikTok",
+        "蝦皮＋TikTok",
+    ],
     horizontal=True,
-    key="target_platform",
 )
 
 
 # =========================================================
-# 4｜AI 功能
+# 4 AI 功能
 # =========================================================
 
-st.subheader("4｜🤖 Gemini AI 功能")
+st.subheader(
+    "4｜🤖 AI 功能"
+)
 
 generate_options = [
+
     "商品辨識",
+
     "AI 選品分析",
+
     "蝦皮上架文案",
+
     "TikTok 文案",
-    "即夢 AI 2.5 生圖指令",
-    "即夢 AI 2.5 影片指令",
-    "即夢 AI 2.5 爆款帶貨影片",
+
+    "Kling AI 3.0 真生成影片",
+
     "分潤合規檢查",
+
     "完整流程",
+
 ]
 
+
 selected_items = st.multiselect(
-    "選擇需要的功能",
-    options=generate_options,
-    default=["完整流程"],
+
+    "AI 功能",
+    generate_options,
+
+    default=auto_select_features(),
+
     key="selected_ai_features",
+
 )
 
+
 if (
-    "完整流程" in selected_items
-    and len(selected_items) > 1
+    "完整流程"
+    in selected_items
 ):
-    st.info(
-        "ℹ️ 已選擇完整流程，Gemini 會一次產生完整分析。"
+
+    st.success(
+        "🤖 完整流程已自動勾選"
     )
 
 
 # =========================================================
-# 5｜啟動
+# 5 Kling 設定
 # =========================================================
 
-st.subheader("5｜🚀 開始 Gemini AI 分析")
+st.subheader(
+    "5｜🎬 Kling 真生成影片設定"
+)
+
+kcol1, kcol2, kcol3 = st.columns(3)
+
+
+with kcol1:
+
+    kling_resolution = st.selectbox(
+        "解析度",
+        [
+            "720p",
+            "1080p",
+        ],
+        index=1,
+    )
+
+
+with kcol2:
+
+    kling_duration = st.selectbox(
+        "影片秒數",
+        list(range(3, 16)),
+        index=7,
+    )
+
+
+with kcol3:
+
+    kling_aspect_ratio = st.selectbox(
+        "畫面比例",
+        [
+            "9:16",
+            "16:9",
+            "1:1",
+        ],
+        index=0,
+    )
+
+
+kling_watermark = st.checkbox(
+    "Kling 生成水印",
+    value=False,
+)
+
+
+st.info(
+    "📌 商品圖片會自動作為 Kling Image-to-Video 的首幀。"
+)
+
+
+# =========================================================
+# 6 啟動 AI
+# =========================================================
+
+st.subheader(
+    "6｜🚀 開始 AI 分析"
+)
 
 if st.button(
-    "🚀 啟動 Gemini AI 蝦皮半自動化 2.5",
+    "🚀 啟動 Gemini＋Kling 真生成影片",
     type="primary",
     use_container_width=True,
-    key="start_ai_analysis",
+    key="start_real_ai",
 ):
-    st.session_state.gemini_error = ""
 
-    if prepared_image_bytes is None:
-        st.error("❌ 請先上傳商品圖片。")
+    if not prepared_image_bytes:
 
-    elif not selected_items:
-        st.error("❌ 請至少選擇一個 AI 功能。")
+        st.error(
+            "❌ 請先上傳商品圖片。"
+        )
 
-    elif not get_gemini_api_key():
-        st.error("❌ 找不到 GEMINI_API_KEY。")
+    elif not get_kling_api_key():
+
+        st.error(
+            "❌ 找不到 KLING_API_KEY。"
+        )
+
         st.code(
-            'GEMINI_API_KEY = "你的 Gemini API Key"'
+            'KLING_API_KEY = "你的 Kling API Key"'
         )
 
     else:
+
+        # =================================================
+        # 自動 AI 分析
+        # =================================================
+
         product_data = {
-            "商品名稱": product_name,
-            "商品價格": product_price,
-            "商品成本": product_cost,
-            "分潤比例": commission_rate,
-            "月銷量": monthly_sales,
-            "商品評分": product_rating,
-            "商品連結": product_url,
-            "商品規格": product_spec,
-            "目標平台": target_platform,
+
+            "商品名稱":
+                product_name,
+
+            "商品價格":
+                product_price,
+
+            "商品成本":
+                product_cost,
+
+            "分潤比例":
+                commission_rate,
+
+            "月銷量":
+                monthly_sales,
+
+            "商品評分":
+                product_rating,
+
+            "商品連結":
+                product_url,
+
+            "商品規格":
+                product_spec,
+
+            "目標平台":
+                target_platform,
+
         }
 
-        effective_items = (
-            ["完整流程"]
-            if "完整流程" in selected_items
-            else selected_items
-        )
 
-        with st.spinner(
-            "🧠 Gemini 正在分析商品圖片……"
-        ):
-            try:
-                result = generate_gemini_ai(
-                    product_data,
-                    effective_items,
-                    prepared_image_bytes,
-                )
+        # =================================================
+        # Gemini
+        # =================================================
 
-                st.session_state.analysis_result = result
-                st.session_state.analysis_mode = (
-                    "Gemini API｜圖片＋文字分析"
-                )
+        if get_gemini_api_key():
 
-                st.session_state.last_product_name = (
-                    product_name.strip() or "商品"
-                )
+            gemini_prompt = f"""
+你是 AI 蝦皮半自動化 2.5 PRO 商品分析 AI。
 
-                st.success("🎉 Gemini AI 分析完成！")
+請分析使用者提供的商品圖片。
 
-                if st.session_state.gemini_model:
-                    st.info(
-                        "🤖 實際使用模型："
-                        + st.session_state.gemini_model
+商品名稱：
+{product_name or "待辨識"}
+
+商品價格：
+{product_price or "待確認"}
+
+商品規格：
+{product_spec or "待確認"}
+
+平台：
+{target_platform}
+
+請輸出：
+
+1. 商品辨識
+2. AI 選品分析
+3. 蝦皮商品標題 3 組
+4. 蝦皮商品描述
+5. TikTok 15 秒文案
+6. 商品特色
+7. 合規風險
+8. Kling 3.0 Turbo 影片 Prompt
+
+禁止虛構：
+品牌、規格、價格、成分、產地、
+功效、醫療效果、認證、贈品。
+
+如果無法確認：
+請寫「待人工確認」。
+
+Kling 影片必須：
+9:16
+10 seconds
+1080p
+premium commercial product video
+same product identity
+same packaging
+same logo
+same label
+same color
+same proportions
+no people
+no hands
+no second product
+no deformation
+no fake claims
+
+{KLING_PRODUCT_RULES}
+"""
+
+            with st.spinner(
+                "🧠 Gemini 正在分析商品圖片……"
+            ):
+
+                try:
+
+                    result = call_gemini(
+                        prompt=gemini_prompt,
+                        image_bytes=(
+                            prepared_image_bytes
+                        ),
+                        mime_type="image/jpeg",
                     )
 
-            except Exception as error:
-                error_message = str(error)
+                    st.session_state.analysis_result = (
+                        result
+                    )
 
-                st.session_state.gemini_error = (
-                    error_message
-                )
+                    st.session_state.analysis_mode = (
+                        "Gemini｜商品圖片＋文字"
+                    )
 
-                st.session_state.analysis_result = ""
+                    st.success(
+                        "✅ Gemini 商品分析完成"
+                    )
 
-                st.error("❌ Gemini API 呼叫失敗。")
-                st.code(error_message)
+                except Exception as error:
+
+                    st.warning(
+                        "⚠️ Gemini 分析失敗，"
+                        "但仍可以直接使用 Kling 生成影片。"
+                    )
+
+                    st.code(
+                        str(error)
+                    )
+
+        else:
+
+            st.info(
+                "ℹ️ 未設定 Gemini API，"
+                "直接使用 Kling 自動生成影片 Prompt。"
+            )
 
 
-# =========================================================
-# Gemini 錯誤
-# =========================================================
+        # =================================================
+        # Kling Prompt
+        # =================================================
 
-if st.session_state.gemini_error:
-    with st.expander(
-        "🔎 Gemini 錯誤詳細資訊",
-        expanded=True,
-    ):
-        st.code(
-            st.session_state.gemini_error
+        kling_prompt = build_kling_prompt(
+            product_name=product_name,
+            product_spec=product_spec,
+            target_platform=target_platform,
+        )
+
+        st.session_state.kling_prompt = (
+            kling_prompt
         )
 
 
+        # =================================================
+        # Kling 真生成
+        # =================================================
+
+        try:
+
+            (
+                video_bytes,
+                video_url,
+            ) = generate_real_kling_video(
+
+                image_bytes=
+                    prepared_image_bytes,
+
+                product_name=
+                    product_name,
+
+                product_spec=
+                    product_spec,
+
+                target_platform=
+                    target_platform,
+
+                resolution=
+                    kling_resolution,
+
+                duration=
+                    kling_duration,
+
+                aspect_ratio=
+                    kling_aspect_ratio,
+
+                watermark=
+                    kling_watermark,
+
+            )
+
+            st.balloons()
+
+            st.success(
+                "🎉 Kling 已真正生成影片！"
+            )
+
+        except Exception as error:
+
+            st.error(
+                "❌ Kling 真影片生成失敗"
+            )
+
+            st.code(
+                str(error)
+            )
+
+
 # =========================================================
-# 6｜分析結果
+# Gemini 結果
 # =========================================================
 
 if st.session_state.analysis_result:
+
     st.divider()
 
-    st.subheader("6｜📊 Gemini AI 分析結果")
-
-    st.caption(
-        "模式：" + st.session_state.analysis_mode
+    st.subheader(
+        "📊 Gemini AI 分析結果"
     )
 
     if st.session_state.gemini_model:
+
         st.success(
-            "🤖 Gemini 模型："
+            "Gemini 模型："
             + st.session_state.gemini_model
         )
 
@@ -1859,546 +3411,541 @@ if st.session_state.analysis_result:
         unsafe_allow_html=True,
     )
 
-    st.subheader("7｜📋 完整結果")
-
-    st.text_area(
-        "完整 Gemini AI 結果",
-        value=st.session_state.analysis_result,
-        height=700,
-        key="full_ai_result",
-    )
-
-    current_time = datetime.now().strftime(
-        "%Y%m%d_%H%M%S"
-    )
-
-    safe_product_name = (
-        product_name.strip()
-        if product_name.strip()
-        else "商品分析"
-    )
-
-    safe_product_name = re.sub(
-        r'[\\/:*?"<>|]+',
-        "_",
-        safe_product_name,
-    )
-
-    file_name = (
-        "AI蝦皮半自動化2.5_Gemini_"
-        f"{safe_product_name}_{current_time}.txt"
-    )
-
     st.download_button(
-        "⬇️ 下載完整 Gemini AI 結果",
-        data=st.session_state.analysis_result.encode("utf-8"),
-        file_name=file_name,
+        "⬇️ 下載 Gemini 分析",
+        data=(
+            st.session_state.analysis_result
+            .encode("utf-8")
+        ),
+        file_name=(
+            "Gemini_商品分析.txt"
+        ),
         mime="text/plain",
         use_container_width=True,
-        key="download_ai_result",
-    )
-
-    st.warning(
-        "正式發布前，請人工確認："
-        "商品名稱、品牌、容量、產地、"
-        "成分、保存期限、貨源、售價、"
-        "庫存、組合數、商品規格及分潤資格。"
     )
 
 
 # =========================================================
-# 8｜影片中心
+# Kling Prompt
+# =========================================================
+
+if st.session_state.kling_prompt:
+
+    st.divider()
+
+    st.subheader(
+        "🎬 Kling 3.0 Turbo Prompt"
+    )
+
+    st.text_area(
+        "Kling Prompt",
+        value=(
+            st.session_state.kling_prompt
+        ),
+        height=500,
+        key="kling_prompt_display",
+    )
+
+    st.download_button(
+        "⬇️ 下載 Kling Prompt",
+        data=(
+            st.session_state.kling_prompt
+            .encode("utf-8")
+        ),
+        file_name="Kling_3.0_Turbo_Prompt.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
+
+
+# =========================================================
+# Kling 真生成影片
 # =========================================================
 
 st.divider()
 
 st.markdown(
-    '<div class="video-title">🎬 8｜即夢 AI 2.5 影片中心</div>',
+    '<div class="video-title">'
+    '🎬 Kling 3.0 Turbo 真生成影片中心'
+    '</div>',
     unsafe_allow_html=True,
 )
 
-st.info(
-    "影片流程：Gemini 產生 Prompt → "
-    "複製 Prompt → 貼到即夢 AI 2.5 → "
-    "生成影片 → 將 MP4/MOV/WEBM 上傳到這裡 → "
-    "網頁直接播放。"
+
+if st.session_state.kling_task_id:
+
+    st.write(
+        "Kling Task ID："
+        f"`{st.session_state.kling_task_id}`"
+    )
+
+    st.write(
+        "目前狀態："
+        f"`{st.session_state.kling_status or 'processing'}`"
+    )
+
+
+if st.session_state.kling_video_bytes:
+
+    st.success(
+        "🟢 Kling 真影片已生成完成"
+    )
+
+    st.video(
+        st.session_state.kling_video_bytes,
+        format="video/mp4",
+        start_time=0,
+    )
+
+    st.caption(
+        "Kling 生成影片｜MP4"
+    )
+
+    st.download_button(
+        "⬇️ 下載 Kling 真生成影片",
+        data=(
+            st.session_state.kling_video_bytes
+        ),
+        file_name=(
+            st.session_state.kling_video_name
+            or "Kling影片.mp4"
+        ),
+        mime="video/mp4",
+        use_container_width=True,
+        key="download_kling_video",
+    )
+
+    if st.button(
+        "🗑️ 清除 Kling 影片",
+        use_container_width=True,
+        key="clear_kling",
+    ):
+
+        clear_kling_video()
+
+        st.rerun()
+
+else:
+
+    st.info(
+        "目前還沒有 Kling 真生成影片。"
+    )
+
+
+# =========================================================
+# 使用者上傳影片
+# =========================================================
+
+st.divider()
+
+st.subheader(
+    "📤 其他影片上傳 / 預覽"
 )
 
-# =========================================================
-# 影片 Prompt 操作流程
-# =========================================================
-
-with st.expander(
-    "🎬 查看即夢 AI 2.5 影片操作流程",
-    expanded=True,
-):
-    st.markdown(
-        """
-### ① Gemini 產生影片 Prompt
-Gemini 會根據商品圖片產生：
-- 9:16 直式影片
-- 15 秒商品影片
-- 開場
-- 商品細節
-- 鏡頭運動
-- 結尾
-- 商品一致性限制
-- Negative Prompt
-
-### ② 複製 Prompt
-從 Gemini 結果複製「即夢 AI 2.5 影片 Prompt」。
-
-### ③ 到即夢生成
-將 Prompt 貼到即夢 AI 2.5。
-
-### ④ 生成完成後
-**建議優先下載 MP4（H.264/AAC）。**
-
-### ⑤ 上傳回本系統
-下面的播放器會直接顯示影片。
-
-> 如果 MOV / WEBM 上傳成功但手機瀏覽器不能播放，
-> 通常是影片編碼或瀏覽器支援問題，不代表檔案沒有上傳。
-> 最穩定的格式是 MP4。
-        """
-    )
+st.caption(
+    "建議優先使用 MP4。"
+    "如果即夢、Kling 或其他平台下載的是 MOV / WEBM，"
+    "可以嘗試上傳；若手機無法播放，"
+    "請轉成 MP4（H.264/AAC）。"
+)
 
 
-# =========================================================
-# 影片工具函式
-# =========================================================
+uploaded_video = st.file_uploader(
 
-def detect_video_mime(filename, browser_mime=""):
-    """
-    根據副檔名 + browser MIME 判斷影片格式。
-    不盲目相信瀏覽器回傳的 MIME。
-    """
-    ext = os.path.splitext(
-        str(filename or "")
-    )[1].lower()
+    "上傳 MP4 / MOV / WEBM",
 
-    if ext in VIDEO_MIME_MAP:
-        return VIDEO_MIME_MAP[ext], ext
+    type=[
+        "mp4",
+        "mov",
+        "webm",
+    ],
 
-    if browser_mime in VIDEO_TYPE_MAP.values():
-        for suffix, mime in VIDEO_MIME_MAP.items():
-            if mime == browser_mime:
-                return mime, suffix
+    accept_multiple_files=False,
 
-    return "video/mp4", ".mp4"
+    key="manual_video_uploader",
+
+)
 
 
-def save_video_to_session(video_file):
-    """
-    將影片完整讀入 session。
-    這樣 Streamlit rerun 後，影片仍能在目前 session 顯示。
-    """
-    raw = video_file.getvalue()
-
-    if not raw:
-        raise ValueError("影片檔案內容是空的。")
-
-    size_mb = len(raw) / 1024 / 1024
-
-    if size_mb > MAX_VIDEO_MB:
-        raise ValueError(
-            f"影片大小 {size_mb:.1f} MB，"
-            f"超過目前程式限制 {MAX_VIDEO_MB} MB。"
-        )
-
-    mime, ext = detect_video_mime(
-        video_file.name,
-        video_file.type or "",
-    )
-
-    st.session_state.last_video_name = (
-        video_file.name
-    )
-
-    st.session_state.last_video_bytes = raw
-    st.session_state.last_video_mime = mime
-    st.session_state.last_video_ext = ext
-
-    return raw, mime, ext, size_mb
-
-
-def clear_video():
-    st.session_state.last_video_name = ""
-    st.session_state.last_video_bytes = None
-    st.session_state.last_video_mime = "video/mp4"
-    st.session_state.last_video_ext = ".mp4"
-
-
-def show_video_player(
-    video_bytes,
-    mime,
-    filename="影片",
-):
-    """
-    核心修正：
-    直接傳 bytes + 明確 format。
-    不只呼叫 st.video(bytes)。
-    """
-
-    if not video_bytes:
-        st.warning("目前沒有影片可以播放。")
-        return
+if uploaded_video:
 
     try:
+
+        (
+            raw,
+            mime,
+            ext,
+            size_mb,
+        ) = save_uploaded_video(
+            uploaded_video
+        )
+
+        st.success(
+            f"✅ 影片已上傳："
+            f"{uploaded_video.name}"
+        )
+
+        st.write(
+            f"格式：**{mime}**"
+        )
+
+        st.write(
+            f"大小：**{size_mb:.2f} MB**"
+        )
+
+        st.markdown(
+            "### ▶️ 影片預覽"
+        )
+
         st.video(
-            data=video_bytes,
+            raw,
             format=mime,
             start_time=0,
         )
 
-        st.caption(
-            f"播放器格式：{mime}｜檔案：{filename}"
-        )
-
-    except Exception as error:
-        st.error(
-            "❌ Streamlit 影片播放器無法建立。"
-        )
-        st.code(str(error))
-
-
-# =========================================================
-# 影片上傳
-# =========================================================
-
-st.subheader("📤 上傳即夢產出的影片")
-
-st.caption(
-    "建議優先使用 MP4。若即夢下載的是 MOV / WEBM，"
-    "仍可嘗試上傳；如果手機瀏覽器無法解碼，"
-    "請將影片轉成 MP4（H.264/AAC）再上傳。"
-)
-
-video_file = st.file_uploader(
-    "選擇影片檔案",
-    type=["mp4", "mov", "webm"],
-    accept_multiple_files=False,
-    key="jimeng_video_uploader",
-    help=(
-        "支援 MP4、MOV、WEBM。"
-        "建議 MP4（H.264/AAC）。"
-    ),
-)
-
-# =========================================================
-# 有新影片 → 立即處理
-# =========================================================
-
-if video_file is not None:
-    try:
-        # 避免同一檔案在 Streamlit rerun 時重複處理
-        incoming_signature = (
-            f"{video_file.name}_"
-            f"{getattr(video_file, 'size', 0)}"
-        )
-
-        old_signature = st.session_state.get(
-            "last_video_signature",
-            "",
-        )
-
-        if incoming_signature != old_signature:
-            raw, mime, ext, size_mb = save_video_to_session(
-                video_file
-            )
-
-            st.session_state.last_video_signature = (
-                incoming_signature
-            )
-
-            st.success(
-                f"✅ 影片已成功上傳：{video_file.name}"
-            )
-
-            st.write(
-                f"影片大小：**{size_mb:.2f} MB**"
-            )
-
-            st.write(
-                f"影片格式：**{mime}**"
-            )
-
-        else:
-            raw = st.session_state.last_video_bytes
-            mime = st.session_state.last_video_mime
-            ext = st.session_state.last_video_ext
-
-        # =================================================
-        # 影片立即預覽
-        # =================================================
-
-        st.markdown("### ▶️ 影片預覽")
-
-        show_video_player(
-            raw,
-            mime,
-            video_file.name,
-        )
-
-        # =================================================
-        # 格式提醒
-        # =================================================
-
         if ext == ".mp4":
+
             st.success(
-                "✅ MP4 是目前最推薦的網頁播放格式。"
+                "🟢 MP4：手機瀏覽器最推薦。"
             )
 
         elif ext == ".mov":
+
             st.warning(
-                "⚠️ MOV 已上傳成功，但部分 Android "
-                "瀏覽器不支援某些 MOV 編碼。"
-                "如果播放器黑屏，請轉成 MP4。"
+                "🟡 MOV："
+                "如果手機黑屏，"
+                "請轉成 MP4（H.264/AAC）。"
             )
 
         elif ext == ".webm":
-            st.info(
-                "ℹ️ WEBM 已上傳成功。"
-                "如果你的手機瀏覽器無法播放，"
-                "請轉成 MP4。"
+
+            st.warning(
+                "🟡 WEBM："
+                "如果手機無法解碼，"
+                "請轉成 MP4（H.264/AAC）。"
             )
 
-        safe_video_name = re.sub(
+        safe_name = re.sub(
             r'[\\/:*?"<>|]+',
             "_",
-            video_file.name,
+            uploaded_video.name,
         )
 
         st.download_button(
             "⬇️ 下載目前影片",
             data=raw,
-            file_name=safe_video_name,
+            file_name=safe_name,
             mime=mime,
             use_container_width=True,
-            key="download_current_video",
+            key="download_manual_video",
         )
 
     except Exception as error:
-        st.error("❌ 影片上傳 / 處理失敗。")
-        st.code(str(error))
+
+        st.error(
+            "❌ 影片處理失敗"
+        )
+
+        st.code(
+            str(error)
+        )
 
 
 # =========================================================
-# 影片素材區
+# Session 目前影片
 # =========================================================
 
-st.subheader("🎞️ 影片素材管理")
+if st.session_state.uploaded_video_bytes:
 
-video_col1, video_col2 = st.columns(2)
+    st.divider()
 
-with video_col1:
-    st.metric(
-        "目前影片",
-        (
-            "已上傳"
-            if st.session_state.last_video_bytes
-            else "尚未上傳"
-        ),
+    st.subheader(
+        "🎞️ 目前上傳影片"
     )
-
-with video_col2:
-    if st.session_state.last_video_bytes:
-        size_mb = (
-            len(st.session_state.last_video_bytes)
-            / 1024
-            / 1024
-        )
-
-        st.metric(
-            "影片大小",
-            f"{size_mb:.2f} MB",
-        )
-    else:
-        st.metric(
-            "影片大小",
-            "—",
-        )
-
-
-# =========================================================
-# Session 裡已有影片 → 持續顯示
-# =========================================================
-
-if st.session_state.last_video_bytes:
-    st.markdown("### 🎥 目前影片")
 
     st.caption(
-        st.session_state.last_video_name
+        st.session_state.uploaded_video_name
     )
 
-    show_video_player(
-        st.session_state.last_video_bytes,
-        st.session_state.last_video_mime,
-        st.session_state.last_video_name,
+    st.video(
+        st.session_state.uploaded_video_bytes,
+        format=(
+            st.session_state.uploaded_video_mime
+        ),
+        start_time=0,
     )
-
-    if st.session_state.last_video_ext == ".mp4":
-        st.success(
-            "🟢 目前影片為 MP4，適合直接在手機瀏覽器播放。"
-        )
-    else:
-        st.warning(
-            "🟡 目前影片不是 MP4。"
-            "如果手機播放器沒有畫面，"
-            "請轉成 MP4（H.264/AAC）。"
-        )
 
     if st.button(
-        "🗑️ 清除目前影片",
+        "🗑️ 清除目前上傳影片",
         use_container_width=True,
-        key="clear_current_video",
+        key="clear_manual_video",
     ):
-        clear_video()
-        st.session_state.last_video_signature = ""
+
+        clear_uploaded_video()
+
         st.rerun()
 
 
 # =========================================================
-# 影片問題排查
+# 影片格式說明
 # =========================================================
 
 with st.expander(
-    "🛠️ 影片上傳後沒有畫面的排查方法"
+    "📱 手機播放與影片格式"
 ):
+
     st.markdown(
         """
-### 情況 A：完全不能選影片
-請確認副檔名是：
-- `.mp4`
-- `.mov`
-- `.webm`
-
-### 情況 B：顯示「已成功上傳」，但播放器黑屏
-最常見原因是**影片編碼**，不是上傳失敗。
-
-尤其 MOV 可能使用手機瀏覽器不支援的編碼。
-
-### 最穩定設定
-將即夢影片輸出 / 轉檔成：
+### 最推薦
 
 **MP4**
-- Video：H.264
-- Audio：AAC
-- 建議：9:16
-- 建議：1080×1920
 
-### 情況 C：影片很大、一直轉圈
-可能是：
-- 影片檔太大
-- 網路速度不足
-- Streamlit 主機上傳限制
-- 瀏覽器記憶體不足
+Video：
+**H.264**
 
-建議先測試 10～30 MB 的 MP4。
+Audio：
+**AAC**
 
-### 情況 D：上傳後頁面重新整理
-本版本會把目前影片存到 Streamlit session，
-正常的 widget rerun 不應該讓目前影片立即消失。
+比例：
+**9:16**
 
-但重新開啟瀏覽器 / Session 結束後，
-影片不會永久保存到伺服器磁碟。
+建議解析度：
+**1080 × 1920**
+
+---
+
+### MOV
+
+MOV 可以上傳。
+
+但手機瀏覽器是否能播放，
+取決於 MOV 裡面的實際 Video Codec。
+
+如果：
+- 黑屏
+- 只有聲音
+- 一直轉圈
+- 無法播放
+
+請轉成：
+
+**MP4 / H.264 / AAC**
+
+---
+
+### WEBM
+
+WEBM 也可以嘗試上傳。
+
+如果 Android 瀏覽器不支援該影片編碼，
+同樣建議轉成：
+
+**MP4 / H.264 / AAC**
+
+---
+
+### Kling
+
+Kling 真生成影片完成後，
+本系統會直接取得影片，
+並以 MP4 形式提供播放與下載。
+
         """
     )
 
 
 # =========================================================
-# 9｜發布前檢查
+# 發布前檢查
 # =========================================================
 
 st.divider()
 
-st.subheader("9｜✅ 發布前檢查")
+st.subheader(
+    "✅ 發布前檢查"
+)
 
 check_items = [
+
     "商品圖片清楚",
+
     "商品品牌已確認",
+
     "商品名稱已確認",
+
     "商品價格已確認",
+
     "商品規格已確認",
+
     "商品庫存已確認",
+
     "商品連結已確認",
-    "影片商品與原商品一致",
-    "影片沒有多出第二個商品",
+
+    "Kling 影片商品與原商品一致",
+
+    "影片沒有第二個商品",
+
     "影片沒有商品變形",
+
     "影片沒有錯誤文字",
+
     "影片沒有假價格",
+
     "影片沒有假贈品",
+
     "影片沒有假認證",
+
     "文案沒有誇大效果",
+
     "分潤資格已確認",
+
 ]
+
 
 checked = 0
 
+
 for item in check_items:
-    if st.checkbox(
-        item,
-        key="check_"
+
+    key = (
+        "publish_check_"
         + hashlib.md5(
             item.encode("utf-8")
-        ).hexdigest(),
+        ).hexdigest()
+    )
+
+    if st.checkbox(
+        item,
+        key=key,
     ):
+
         checked += 1
+
 
 progress = (
     checked / len(check_items)
-    if check_items
-    else 0
 )
 
-st.progress(progress)
+
+st.progress(
+    progress
+)
+
 
 st.write(
-    f"完成：**{checked}/{len(check_items)}**"
+    f"完成："
+    f"**{checked}/{len(check_items)}**"
 )
 
+
 if checked == len(check_items):
+
     st.success(
         "🎉 發布前檢查全部完成。"
     )
+
 else:
+
     st.warning(
         "⚠️ 還有項目需要人工確認。"
     )
 
 
 # =========================================================
-# 10｜系統設定
+# 系統狀態
 # =========================================================
 
-with st.expander("⚙️ 系統設定"):
-    st.success("✅ 本機會員系統")
-    st.success("✅ members.json")
-    st.success("✅ Gemini API")
-    st.success("✅ Gemini 商品圖片辨識")
-    st.success("✅ Gemini 商品分析")
-    st.success("✅ Gemini 蝦皮文案")
-    st.success("✅ Gemini TikTok 文案")
-    st.success("✅ 即夢 AI 2.5 生圖 Prompt")
-    st.success("✅ 即夢 AI 2.5 影片 Prompt")
-    st.success("✅ 9:16 爆款帶貨影片 Prompt")
-    st.success("✅ 商品一致性保護")
-    st.success("✅ MP4 / MOV / WEBM 影片上傳")
-    st.success("✅ 影片 MIME 自動判斷")
-    st.success("✅ Streamlit 影片播放器")
-    st.success("✅ 影片 Session 暫存")
-    st.success("✅ 影片下載")
-    st.success("🚫 Runway API：未使用")
+with st.expander(
+    "⚙️ 系統功能"
+):
+
+    st.success(
+        "✅ 商品圖片上傳"
+    )
+
+    st.success(
+        "✅ Gemini 商品圖片分析"
+    )
+
+    st.success(
+        "✅ AI 商品選品"
+    )
+
+    st.success(
+        "✅ 蝦皮文案"
+    )
+
+    st.success(
+        "✅ TikTok 文案"
+    )
+
+    st.success(
+        "✅ Kling 3.0 Turbo"
+    )
+
+    st.success(
+        "✅ Image-to-Video"
+    )
+
+    st.success(
+        "✅ 真正 API 生成影片"
+    )
+
+    st.success(
+        "✅ Kling Task ID"
+    )
+
+    st.success(
+        "✅ 自動查詢生成狀態"
+    )
+
+    st.success(
+        "✅ 自動取得生成影片"
+    )
+
+    st.success(
+        "✅ 自動播放"
+    )
+
+    st.success(
+        "✅ MP4"
+    )
+
+    st.success(
+        "✅ MOV"
+    )
+
+    st.success(
+        "✅ WEBM"
+    )
+
+    st.success(
+        "✅ 手機播放提示"
+    )
+
+    st.success(
+        "✅ Session 防止影片重複處理"
+    )
+
+    st.success(
+        "✅ 會員系統"
+    )
+
+    st.success(
+        "✅ 管理員"
+    )
+
+    st.success(
+        "✅ 會員到期"
+    )
 
     st.info(
-        "Gemini 負責圖片分析與 Prompt；"
-        "即夢負責實際影片製作；"
-        "影片完成後可上傳回本系統播放。"
+        "Gemini 負責商品理解與 Prompt；"
+        "Kling 負責真正生成影片。"
     )
 
 
 # =========================================================
-# 頁尾
+# Footer
 # =========================================================
 
 st.divider()
@@ -2406,8 +3953,9 @@ st.divider()
 st.caption(
     "AI 蝦皮半自動化 2.5 PRO｜"
     "Gemini AI｜"
-    "商品圖片辨識｜"
-    "即夢 AI 2.5 Prompt｜"
-    "9:16 影片中心｜"
+    "Kling 3.0 Turbo｜"
+    "Image-to-Video｜"
+    "真生成影片｜"
+    "MP4 / MOV / WEBM｜"
     "正式發布前必須人工確認。"
 )
