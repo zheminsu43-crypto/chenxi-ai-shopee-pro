@@ -1002,6 +1002,583 @@ def get_video_info(uploaded_file):
 # =========================================================
 def auth_page():
     st.markdown(
+        '<div class="member.get("status", "active")).lower() != "active":
+        return False, "此會員帳號已停用。"
+
+    saved_hash = str(member.get("password_hash", ""))
+
+    if not saved_hash or "$" not in saved_hash:
+        return False, "會員資料異常。"
+
+    if not verify_password(password, saved_hash):
+        return False, "帳號或密碼錯誤。"
+
+    expires_text = str(member.get("expires", ""))
+
+    try:
+        expires_date = date.fromisoformat(expires_text)
+    except Exception:
+        return False, "會員到期日資料異常。"
+
+    if date.today() > expires_date:
+        return False, "會員資格已到期。"
+
+    return True, member
+
+
+def logout():
+    st.session_state.logged_in = False
+    st.session_state.username = ""
+    st.session_state.user_role = "guest"
+    st.session_state.member = {}
+    st.session_state.analysis_results = None
+    st.session_state.last_video_name = ""
+    st.session_state.last_video_bytes = None
+    st.session_state.last_video_mime = "video/mp4"
+    st.session_state.last_video_ext = ".mp4"
+    st.rerun()
+
+
+# =========================================================
+# 圖片處理
+# =========================================================
+def prepare_image(uploaded_file):
+    if uploaded_file is None:
+        return None, None
+
+    raw = uploaded_file.getvalue()
+
+    if not raw:
+        raise ValueError("圖片檔案是空的。")
+
+    size_mb = len(raw) / 1024 / 1024
+
+    if size_mb > MAX_IMAGE_MB:
+        raise ValueError(
+            f"圖片大小為 {size_mb:.1f} MB，"
+            f"不可超過 {MAX_IMAGE_MB} MB。"
+        )
+
+    try:
+        image = Image.open(io.BytesIO(raw))
+        image = ImageOps.exif_transpose(image)
+        image.load()
+
+        if image.mode == "RGBA":
+            background = Image.new(
+                "RGB",
+                image.size,
+                "white",
+            )
+            background.paste(
+                image,
+                mask=image.getchannel("A"),
+            )
+            image = background
+        else:
+            image = image.convert("RGB")
+
+        image.thumbnail(
+            (MAX_IMAGE_SIZE, MAX_IMAGE_SIZE),
+            Image.Resampling.LANCZOS,
+        )
+
+        output = io.BytesIO()
+
+        image.save(
+            output,
+            format="JPEG",
+            quality=92,
+            optimize=True,
+        )
+
+        return image, output.getvalue()
+
+    except Exception as e:
+        raise ValueError(f"圖片讀取失敗：{e}")
+
+
+# =========================================================
+# 即夢核心規則
+# =========================================================
+JIMENG_CORE_RULES = """
+【商品身份鎖定】
+上傳商品圖片是唯一主要商品來源。
+
+必須維持：
+- 原品牌
+- 原包裝
+- 原形狀
+- 原比例
+- 原顏色
+- 原材質
+- 原 Logo
+- 原標籤
+- 原印刷文字
+- 原包裝結構
+
+禁止：
+- 改品牌
+- 改包裝
+- 改 Logo
+- 改文字
+- 改顏色
+- 商品變形
+- 商品融化
+- 商品漂移
+- 商品閃爍
+- 商品消失
+- 商品變成其他商品
+- 新增第二個商品
+- 重複商品
+
+預設禁止：
+- 人物
+- 手
+- 模特兒
+- 主持人
+- 代言人
+- 人物拿商品
+
+禁止：
+- 浮水印
+- 假價格
+- 假折扣
+- 假贈品
+- 假認證
+- 假規格
+- 假功效
+- 醫療效果
+- 未確認資訊
+
+影片全程必須維持同一商品身份。
+
+視覺方向：
+premium commercial product photography,
+realistic product details,
+clean composition,
+professional studio lighting,
+smooth cinematic camera,
+stable product identity.
+"""
+
+
+# =========================================================
+# 商品分析 Prompt
+# =========================================================
+def build_product_analysis_prompt(product_data):
+    return f"""
+你是「AI 蝦皮半自動化 2.5 PRO」的商品分析 AI。
+
+請分析使用者上傳的商品圖片與使用者輸入。
+
+【使用者資料】
+商品名稱：{product_data["product_name"] or "待確認"}
+商品價格：{product_data["price"] or "待確認"}
+商品成本：{product_data["cost"] or "待確認"}
+分潤比例：{product_data["commission"] or "待確認"}
+月銷量：{product_data["sales"] or "待確認"}
+商品評分：{product_data["rating"] or "待確認"}
+商品連結：{product_data["url"] or "待確認"}
+商品規格：{product_data["spec"] or "待確認"}
+補充資訊：{product_data["features"] or "待確認"}
+主要平台：{product_data["platform"]}
+
+【嚴格規則】
+1. 不得捏造商品資訊。
+2. 圖片看不清楚的資料寫「待確認」。
+3. 不可自行創造品牌。
+4. 不可自行創造價格。
+5. 不可自行創造容量。
+6. 不可自行創造成分。
+7. 不可自行創造產地。
+8. 不可自行創造功效。
+9. 不可自行創造醫療效果。
+10. 不可自行創造認證。
+11. 不可自行創造優惠。
+12. 不可自行創造贈品。
+13. 多個物品時，選擇最大、最清楚、最主要的商品。
+14. 使用繁體中文。
+15. 不要假裝擁有即時市場資料。
+16. 如果資訊不足，直接標記「待確認」。
+
+【輸出】
+
+# 1｜商品辨識
+商品名稱：
+品牌：
+類別：
+顏色：
+外觀：
+材質：
+包裝：
+Logo：
+可辨識文字：
+型號：
+規格：
+
+# 2｜商品特色
+列出 3～5 個能由圖片或使用者資料確認的特色。
+
+# 3｜AI 選品分析
+- 商品視覺吸引力
+- 電商展示潛力
+- 短影音展示潛力
+- 文案製作潛力
+- 內容製作難度
+- 合規風險
+- 推薦分數 0～100
+
+# 4｜圖片判斷
+圖片清晰度：
+主要商品：
+是否多商品：
+需要人工確認：
+
+# 5｜蝦皮展示建議
+主圖方向：
+第二張圖片方向：
+商品細節圖方向：
+
+# 6｜TikTok 展示建議
+前三秒：
+商品展示：
+鏡頭：
+結尾：
+
+# 7｜即夢 AI 2.5 建議
+{JIMENG_CORE_RULES}
+
+最後一定提醒：
+正式發布前仍需人工確認商品、價格、規格、品牌、庫存、商品頁與分潤資格。
+"""
+
+
+# =========================================================
+# 完整生成 Prompt
+# =========================================================
+def build_full_generation_prompt(product_data, analysis):
+    return f"""
+你是「AI 蝦皮半自動化 2.5 PRO」的專業電商 AI。
+
+根據商品資料與商品圖片分析結果，產生完整電商內容。
+
+【商品資料】
+商品名稱：{product_data["product_name"] or "待確認"}
+價格：{product_data["price"] or "待確認"}
+成本：{product_data["cost"] or "待確認"}
+分潤比例：{product_data["commission"] or "待確認"}
+月銷量：{product_data["sales"] or "待確認"}
+商品評分：{product_data["rating"] or "待確認"}
+商品連結：{product_data["url"] or "待確認"}
+商品規格：{product_data["spec"] or "待確認"}
+補充：{product_data["features"] or "待確認"}
+主要平台：{product_data["platform"]}
+
+【圖片分析】
+{analysis}
+
+【重要規則】
+未知資料一律「待確認」。
+不得虛構價格、優惠、贈品、認證、成分、容量、產地、功效、醫療效果。
+不得誇大。
+不得假裝有即時市場資料。
+
+==================================================
+【1｜蝦皮完整上架文案】
+==================================================
+### 商品標題 1
+### 商品標題 2
+### 商品標題 3
+### SEO 關鍵字
+### 商品短描述
+### 商品完整描述
+### 商品特色
+### 商品規格
+### 使用方式
+### 保存方式
+### 注意事項
+### 購買前提醒
+
+==================================================
+【2｜TikTok】
+==================================================
+### 3 秒 Hook
+### 15 秒腳本
+### 30 秒腳本
+### TikTok 貼文
+### Hashtag
+### CTA
+
+==================================================
+【3｜Facebook】
+==================================================
+### Facebook 貼文
+### 互動問題
+### Hashtag
+
+==================================================
+【4｜Instagram】
+==================================================
+### Instagram Caption
+### Hashtag
+
+==================================================
+【5｜即夢 AI 2.5｜1:1 蝦皮主圖】
+==================================================
+輸出完整 English Prompt。
+
+要求：
+- original product identity
+- original packaging
+- original logo
+- original label
+- original visible text
+- original color
+- original proportions
+- realistic
+- premium commercial photography
+- professional studio lighting
+- clean background
+- sharp details
+- no people
+- no hands
+- no extra product
+
+### Negative Prompt
+必須包含：
+text distortion, logo distortion, label distortion,
+wrong packaging, wrong product, extra product,
+duplicate product, deformed product, watermark,
+blur, low quality, people, hands
+
+==================================================
+【6｜即夢 AI 2.5｜9:16 商品海報】
+==================================================
+輸出完整 English Prompt。
+
+要求：
+9:16 vertical,
+premium advertising,
+product centered,
+original product identity,
+original packaging,
+original logo,
+original label,
+no people,
+no hands,
+no watermark.
+
+### Negative Prompt
+
+==================================================
+【7｜即夢 AI 2.5｜商品細節圖】
+==================================================
+輸出完整 English Prompt。
+
+要求：
+focus on real visible product details,
+material texture,
+packaging details,
+label consistency,
+commercial photography,
+no invented information.
+
+### Negative Prompt
+
+==================================================
+【8｜即夢 AI 2.5｜15 秒影片】
+==================================================
+輸出完整 English Video Prompt。
+
+格式：
+
+0–3 seconds: Opening
+3–7 seconds: Product detail
+7–12 seconds: Camera movement + showcase
+12–15 seconds: Ending
+
+鏡頭：
+slow cinematic push-in,
+subtle orbit movement,
+smooth camera movement,
+stable framing,
+premium commercial product video.
+
+商品全程：
+same product identity,
+same packaging,
+same logo,
+same label,
+same color,
+same proportions.
+
+禁止：
+people, hands, models, extra products,
+duplicate products, product deformation,
+product disappearance, logo drift,
+text drift, watermark.
+
+### Negative Prompt
+
+==================================================
+【9｜15 秒爆款帶貨影片】
+==================================================
+產生：
+- 0–3 秒強視覺 Hook
+- 3–7 秒商品細節
+- 7–12 秒商品展示＋運鏡
+- 12–15 秒穩定收尾
+
+輸出：
+### 中文影片腳本
+### English Video Prompt
+### Negative Prompt
+### 建議鏡頭
+### 建議節奏
+### CTA
+
+注意：
+不要虛構商品功效、認證、價格或優惠。
+
+==================================================
+【10｜影片分鏡表】
+==================================================
+輸出至少 5 個鏡頭：
+
+鏡頭 1：
+時間：
+畫面：
+商品位置：
+鏡頭：
+動作：
+音效建議：
+
+鏡頭 2：
+時間：
+畫面：
+商品位置：
+鏡頭：
+動作：
+音效建議：
+
+鏡頭 3：
+時間：
+畫面：
+商品位置：
+鏡頭：
+動作：
+音效建議：
+
+鏡頭 4：
+時間：
+畫面：
+商品位置：
+鏡頭：
+動作：
+音效建議：
+
+鏡頭 5：
+時間：
+畫面：
+商品位置：
+鏡頭：
+動作：
+音效建議：
+
+==================================================
+【11｜分潤合規檢查】
+==================================================
+逐項輸出：
+商品與圖片一致：
+價格是否確認：
+規格是否確認：
+品牌是否確認：
+商品連結：
+是否存在誇大：
+是否存在假贈品：
+是否存在假認證：
+是否存在假價格：
+是否存在錯誤規格：
+是否存在品牌誤判：
+
+使用：
+✅ 通過
+⚠️ 需確認
+❌ 有問題
+
+==================================================
+【12｜發布前檢查】
+==================================================
+商品：
+價格：
+規格：
+品牌：
+庫存：
+圖片：
+影片：
+商品頁：
+分潤資格：
+
+最後必須輸出：
+「正式發布前仍需人工確認商品、價格、規格、品牌、庫存、商品頁與分潤資格。」
+
+==================================================
+【即夢核心規則】
+==================================================
+{JIMENG_CORE_RULES}
+"""
+
+
+# =========================================================
+# 影片上傳
+# =========================================================
+VIDEO_MIME_MAP = {
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+}
+
+
+def get_video_info(uploaded_file):
+    if uploaded_file is None:
+        return None
+
+    raw = uploaded_file.getvalue()
+
+    if not raw:
+        raise ValueError("影片檔案是空的。")
+
+    size_mb = len(raw) / 1024 / 1024
+
+    if size_mb > MAX_VIDEO_MB:
+        raise ValueError(
+            f"影片大小 {size_mb:.1f} MB，"
+            f"超過 {MAX_VIDEO_MB} MB 上限。"
+        )
+
+    filename = uploaded_file.name or "video.mp4"
+    ext = os.path.splitext(filename)[1].lower()
+
+    mime = uploaded_file.type or VIDEO_MIME_MAP.get(
+        ext,
+        "video/mp4",
+    )
+
+    return {
+        "name": filename,
+        "bytes": raw,
+        "mime": mime,
+        "ext": ext,
+        "size_mb": size_mb,
+    }
+
+
+# =========================================================
+# 登入 / 註冊
+# =========================================================
+def auth_page():
+    st.markdown(
         '<div class="main-title">🛒 AI 蝦皮半自動化 2.5 PRO</div>',
         unsafe_allow_html=True,
     )
