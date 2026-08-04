@@ -11,7 +11,7 @@ from PIL import Image, ImageOps
 # =========================================================
 # AI 蝦皮半自動化 2.5 PRO
 #
-# 免費 Gemini 2.5 Flash 版
+# 免費 Gemini Flash 版
 #
 # Gemini 免費層負責：
 # - 商品圖片分析
@@ -24,7 +24,7 @@ from PIL import Image, ImageOps
 # - 合規檢查
 #
 # 注意：
-# Gemini 2.5 Flash 本身不在本程式內直接產生 MP4。
+# Gemini Flash 本身不在本程式內直接產生 MP4。
 # 本程式產生「影片腳本 / 分鏡 / Prompt」。
 # 真正影片可使用即夢或其他影片工具生成後，
 # 再上傳到本程式的影片中心預覽 / 下載。
@@ -196,58 +196,69 @@ def gemini_generate_text(prompt, image_bytes=None, image_mime="image/jpeg"):
     if client is None:
         return "❌ Gemini Client 建立失敗，請確認 API Key。"
 
-    try:
-        contents = []
+    # 設定嘗試模型的順序，避免單一模型 404
+    candidate_models = [GEMINI_MODEL, "gemini-1.5-flash", "gemini-2.0-flash"]
+    # 去重
+    candidate_models = list(dict.fromkeys(candidate_models))
 
-        if image_bytes:
-            contents.append(
-                types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type=image_mime,
-                )
+    contents = []
+    if image_bytes:
+        contents.append(
+            types.Part.from_bytes(
+                data=image_bytes,
+                mime_type=image_mime,
+            )
+        )
+    contents.append(prompt)
+
+    last_error = ""
+    for model_name in candidate_models:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
             )
 
-        contents.append(prompt)
+            text = getattr(response, "text", None)
 
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
+            if text:
+                return str(text)
+
+        except Exception as e:
+            last_error = str(e)
+            # 如果是 404 說明此模型不存在，嘗試下一個模型
+            if "404" in last_error.lower() or "not found" in last_error.lower():
+                continue
+            else:
+                # 其他錯誤（如 401 密碼錯或 429 額度不足）直接跳出處理
+                break
+
+    error_text = last_error
+    lower = error_text.lower()
+
+    if "api key" in lower or "api_key" in lower:
+        return "❌ Gemini API Key 錯誤，請重新建立或確認 Key。"
+
+    if "401" in lower:
+        return "❌ Gemini API Key 無效或未授權。"
+
+    if "403" in lower:
+        return f"❌ Gemini API 權限不足。\n\n詳細錯誤：{error_text}"
+
+    if "429" in lower or "quota" in lower:
+        return (
+            "❌ Gemini 免費層級目前遇到額度或速率限制。\n\n"
+            "請稍後再試，或確認 Google AI Studio 的用量狀態。"
         )
 
-        text = getattr(response, "text", None)
+    if "404" in lower or "not found" in lower:
+        return (
+            f"❌ 所選的 Gemini 模型目前無法使用。\n\n"
+            f"已嘗試模型：{', '.join(candidate_models)}\n\n"
+            f"詳細錯誤：{error_text}"
+        )
 
-        if not text:
-            return "❌ Gemini 沒有回傳文字內容。"
-
-        return str(text)
-
-    except Exception as e:
-        error_text = str(e)
-        lower = error_text.lower()
-
-        if "api key" in lower or "api_key" in lower:
-            return "❌ Gemini API Key 錯誤，請重新建立或確認 Key。"
-
-        if "401" in lower:
-            return "❌ Gemini API Key 無效或未授權。"
-
-        if "403" in lower:
-            return f"❌ Gemini API 權限不足。\n\n詳細錯誤：{error_text}"
-
-        if "429" in lower or "quota" in lower:
-            return (
-                "❌ Gemini 免費層級目前遇到額度或速率限制。\n\n"
-                "請稍後再試，或確認 Google AI Studio 的用量狀態。"
-            )
-
-        if "404" in lower or "not found" in lower:
-            return (
-                f"❌ Gemini 模型目前無法使用。\n\n"
-                f"目前模型：{GEMINI_MODEL}\n\n"
-                f"詳細錯誤：{error_text}"
-            )
-
-        return f"❌ Gemini 呼叫失敗。\n\n{error_text}"
+    return f"❌ Gemini 呼叫失敗。\n\n{error_text}"
 
 
 # =========================================================
@@ -996,7 +1007,7 @@ def auth_page():
     )
 
     st.markdown(
-        '<div class="main-subtitle">免費 Gemini 2.5 Flash × 電商 AI × 即夢 AI 2.5</div>',
+        '<div class="main-subtitle">免費 Gemini Flash × 電商 AI × 即夢 AI 2.5</div>',
         unsafe_allow_html=True,
     )
 
@@ -1132,7 +1143,7 @@ def sidebar():
         else:
             st.warning("尚未設定 API Key")
 
-        st.caption(f"模型：{GEMINI_MODEL}")
+        st.caption(f"預設模型：{GEMINI_MODEL}")
         st.caption("免費版：Gemini 負責分析、文案、腳本、Prompt")
         st.caption("影片：產生 Prompt 後交給影片工具製作")
 
@@ -1231,7 +1242,7 @@ def product_page():
     st.header("🚀 AI 商品分析中心")
 
     st.caption(
-        "免費 Gemini 2.5 Flash：圖片辨識 → 商品分析 → 文案 → "
+        "免費 Gemini Flash：圖片辨識 → 商品分析 → 文案 → "
         "影片腳本 → 即夢 Prompt"
     )
 
@@ -1388,7 +1399,7 @@ def product_page():
         }
 
         with st.spinner(
-            "🤖 Gemini 2.5 Flash 正在分析商品圖片..."
+            "🤖 Gemini Flash 正在分析商品圖片..."
         ):
             analysis_prompt = build_product_analysis_prompt(
                 product_data
@@ -1502,7 +1513,7 @@ def video_page():
     )
 
     st.info(
-        "目前免費 Gemini 2.5 Flash 版負責產生影片腳本、"
+        "目前免費 Gemini Flash 版負責產生影片腳本、"
         "分鏡與 Prompt，不在本程式直接呼叫付費影片生成 API。"
     )
 
@@ -1656,7 +1667,7 @@ def home_page():
     )
 
     st.markdown(
-        '<div class="main-subtitle">免費 Gemini 2.5 Flash × 商品分析 × 電商文案 × 影片腳本 × 即夢 AI 2.5</div>',
+        '<div class="main-subtitle">免費 Gemini Flash × 商品分析 × 電商文案 × 影片腳本 × 即夢 AI 2.5</div>',
         unsafe_allow_html=True,
     )
 
@@ -1707,7 +1718,7 @@ def home_page():
     st.subheader("🆓 免費層級版本的工作方式")
 
     st.write(
-        "Gemini 2.5 Flash：負責商品圖片分析、文案、"
+        "Gemini Flash：負責商品圖片分析、文案、"
         "影片腳本、影片分鏡、即夢 Prompt。"
     )
 
@@ -1730,7 +1741,7 @@ def main():
     st.title("🛒 AI 蝦皮半自動化 2.5 PRO")
 
     st.caption(
-        "免費 Gemini 2.5 Flash × 商品圖片分析 × 蝦皮 × TikTok × 即夢 AI 2.5"
+        "免費 Gemini Flash × 商品圖片分析 × 蝦皮 × TikTok × 即夢 AI 2.5"
     )
 
     tabs = [
