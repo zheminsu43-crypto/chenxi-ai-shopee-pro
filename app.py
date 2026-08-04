@@ -1,10 +1,10 @@
 import streamlit as st
 import os
 import json
-import base64
-import requests
 from PIL import Image
 import io
+from google import genai
+from google.genai import types
 
 # =========================================================
 # 1. 頁面配置與基本設定
@@ -30,52 +30,47 @@ if "analysis_results" not in st.session_state:
 if "api_key" not in st.session_state:
     st.session_state.api_key = os.getenv("GEMINI_API_KEY", "")
 
-# 預設使用者帳密庫 (儲存註冊帳號)
+# 預設使用者帳密庫
 if "users_db" not in st.session_state:
     st.session_state.users_db = {
         "admin": {"password": "123", "role": "admin"}
     }
 
 # =========================================================
-# 2. 輔助 API 呼叫函式
+# 2. 官方 SDK Gemini API 呼叫函式 (免費版 gemini-2.5-flash)
 # =========================================================
-def gemini_generate_text(prompt, image_bytes=None):
-    """呼叫 Gemini API 進行文字生成或圖片分析 (使用 REST API)"""
+def get_gemini_client():
+    """建立 Gemini Client 物件"""
     api_key = st.session_state.api_key
     if not api_key:
+        return None
+    return genai.Client(api_key=api_key)
+
+def gemini_generate_text(prompt, pil_image=None):
+    """使用官方 SDK 呼叫 Gemini API (免費用 gemini-2.5-flash)"""
+    client = get_gemini_client()
+    if not client:
         return "⚠️ 請先在左側邊欄輸入或設定 GEMINI_API_KEY！"
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
-    headers = {"Content-Type": "application/json"}
-    
-    parts = [{"text": prompt}]
-    if image_bytes:
-        encoded_image = base64.b64encode(image_bytes).decode('utf-8')
-        parts.append({
-            "inline_data": {
-                "mime_type": "image/jpeg",
-                "data": encoded_image
-            }
-        })
-        
-    payload = {"contents": [{"parts": parts}]}
-    
+    contents = []
+    if pil_image:
+        contents.append(pil_image)
+    contents.append(prompt)
+
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        res_json = response.json()
-        if "candidates" in res_json and len(res_json["candidates"]) > 0:
-            return res_json["candidates"][0]["content"]["parts"][0]["text"]
-        elif "error" in res_json:
-            return f"❌ API 錯誤提示：{res_json['error'].get('message', res_json)}"
-        else:
-            return f"❌ API 回應異常：{res_json}"
+        # 使用最新的免費模型 gemini-2.5-flash
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents
+        )
+        return response.text
     except Exception as e:
-        return f"❌ 連線失敗：{str(e)}"
+        return f"❌ 呼叫失敗：{str(e)}"
 
 # =========================================================
 # 3. Gemini 商品圖片與文案生成邏輯
 # =========================================================
-def analyze_product_image(image_bytes):
+def analyze_product_image(pil_image):
     prompt = """
 你是專業電商商品圖片分析 AI。
 請仔細分析使用者上傳的商品圖片。
@@ -125,7 +120,7 @@ TikTok 展示重點：
 
 最後再次提醒：正式發布前仍需人工確認商品資訊與規格。
 """
-    return gemini_generate_text(prompt, image_bytes=image_bytes)
+    return gemini_generate_text(prompt, pil_image=pil_image)
 
 def generate_marketing_copy(product_info, analysis_text):
     prompt = f"""
@@ -215,10 +210,10 @@ def sidebar():
         
         st.subheader("🔑 API 設定")
         input_key = st.text_input(
-            "Gemini API Key", 
+            "Gemini API Key (免費版)", 
             value=st.session_state.api_key, 
             type="password",
-            help="請至 Google AI Studio 免費申請 API Key 並貼於此處"
+            help="請至 Google AI Studio (aistudio.google.com) 免費申請 API Key"
         )
         if input_key != st.session_state.api_key:
             st.session_state.api_key = input_key
@@ -243,7 +238,7 @@ def main():
     sidebar()
 
     st.title("🛒 AI 全方位電商文案與即夢 2.5 Prompt 生成器")
-    st.caption("結合 Gemini 圖片辨識 + 蝦皮/TikTok/FB/IG 文案 + 即夢 AI 2.5 繪圖影片 Prompt")
+    st.caption("結合 Gemini 2.5 圖片辨識 + 蝦皮/TikTok/FB/IG 文案 + 即夢 AI 2.5 繪圖影片 Prompt")
 
     if not st.session_state.logged_in:
         auth_page()
@@ -261,10 +256,10 @@ def main():
             uploaded_file = st.file_uploader("上傳商品圖片 (JPG/PNG)", type=["jpg", "jpeg", "png"])
             
         with col_b:
-            image_bytes = None
+            pil_image = None
             if uploaded_file is not None:
-                image_bytes = uploaded_file.read()
-                st.image(image_bytes, caption="上傳的商品預覽", use_column_width=True)
+                pil_image = Image.open(uploaded_file)
+                st.image(pil_image, caption="上傳的商品預覽", use_column_width=True)
 
         st.divider()
 
@@ -274,12 +269,12 @@ def main():
             elif not uploaded_file and not product_name:
                 st.warning("⚠️ 請至少輸入「商品名稱」或「上傳商品圖片」！")
             else:
-                with st.spinner("🤖 Gemini 正在深度分析圖片與文字..."):
+                with st.spinner("🤖 Gemini 2.5 正在深度分析圖片與文字..."):
                     product_info_combined = f"名稱：{product_name}\n補充：{product_features}"
                     
                     img_analysis = "未上傳圖片，跳過圖片辨識。"
-                    if image_bytes:
-                        img_analysis = analyze_product_image(image_bytes)
+                    if pil_image:
+                        img_analysis = analyze_product_image(pil_image)
 
                     copywriting = generate_marketing_copy(product_info_combined, img_analysis)
                     jimeng_prompts = generate_jimeng_prompts(product_info_combined, img_analysis)
