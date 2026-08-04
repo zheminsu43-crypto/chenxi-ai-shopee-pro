@@ -33,11 +33,11 @@ if "api_key" not in st.session_state:
 # 預設使用者帳密庫 (儲存註冊帳號)
 if "users_db" not in st.session_state:
     st.session_state.users_db = {
-        "admin": {"password": "123", "role": "admin"} # 預設管理員帳號
+        "admin": {"password": "123", "role": "admin"}
     }
 
 # =========================================================
-# 2. 輔助 API 呼叫函式 (修復 API 模型名稱問題)
+# 2. 輔助 API 呼叫函式
 # =========================================================
 def gemini_generate_text(prompt, image_bytes=None):
     """呼叫 Gemini API 進行文字生成或圖片分析 (使用 REST API)"""
@@ -45,7 +45,6 @@ def gemini_generate_text(prompt, image_bytes=None):
     if not api_key:
         return "⚠️ 請先在左側邊欄輸入或設定 GEMINI_API_KEY！"
     
-    # 修正重點：使用官方要求的模型完整名稱格式 (gemini-1.5-flash-latest)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
     
@@ -171,10 +170,8 @@ def generate_jimeng_prompts(product_info, analysis_text):
 def auth_page():
     st.subheader("🔑 會員中心")
     
-    # 建立「登入」與「註冊」分頁
     tab_login, tab_register = st.tabs(["🔒 帳號登入", "📝 註冊新帳號"])
     
-    # --- 1. 登入頁面 ---
     with tab_login:
         col1, _ = st.columns([1, 1])
         with col1:
@@ -191,7 +188,6 @@ def auth_page():
                 else:
                     st.error("帳號或密碼錯誤！")
 
-    # --- 2. 註冊頁面 ---
     with tab_register:
         col2, _ = st.columns([1, 1])
         with col2:
@@ -207,7 +203,6 @@ def auth_page():
                 elif new_pwd != confirm_pwd:
                     st.error("兩次輸入的密碼不一致！")
                 else:
-                    # 註冊成功，寫入使用者資料庫
                     st.session_state.users_db[new_user] = {
                         "password": new_pwd,
                         "role": "user"
@@ -218,7 +213,6 @@ def sidebar():
     with st.sidebar:
         st.title("🛒 功能選單")
         
-        # 🔑 API Key 輸入框
         st.subheader("🔑 API 設定")
         input_key = st.text_input(
             "Gemini API Key", 
@@ -251,12 +245,10 @@ def main():
     st.title("🛒 AI 全方位電商文案與即夢 2.5 Prompt 生成器")
     st.caption("結合 Gemini 圖片辨識 + 蝦皮/TikTok/FB/IG 文案 + 即夢 AI 2.5 繪圖影片 Prompt")
 
-    # 未登入時顯示登入/註冊頁面
     if not st.session_state.logged_in:
         auth_page()
         return
 
-    # 已登入後顯示主要功能
     tab1, tab2 = st.tabs(["🚀 一鍵 AI 分析與生成", "📋 完整結果中心"])
 
     with tab1:
@@ -285,18 +277,13 @@ def main():
                 with st.spinner("🤖 Gemini 正在深度分析圖片與文字..."):
                     product_info_combined = f"名稱：{product_name}\n補充：{product_features}"
                     
-                    # 1. 分析圖片
                     img_analysis = "未上傳圖片，跳過圖片辨識。"
                     if image_bytes:
                         img_analysis = analyze_product_image(image_bytes)
 
-                    # 2. 生成文案
                     copywriting = generate_marketing_copy(product_info_combined, img_analysis)
-
-                    # 3. 生成即夢 Prompt
                     jimeng_prompts = generate_jimeng_prompts(product_info_combined, img_analysis)
 
-                    # 儲存結果
                     st.session_state.analysis_results = {
                         "img_analysis": img_analysis,
                         "copywriting": copywriting,
@@ -304,7 +291,6 @@ def main():
                     }
                     st.success("✅ 生成完成！請前往「📋 完整結果中心」查看結果，或直接於下方預覽。")
 
-                    # 當頁預覽
                     st.markdown("---")
                     st.subheader("🎉 生成結果快速預覽")
                     st.markdown(copywriting)
@@ -324,10 +310,6 @@ def main():
 
             with st.expander("🎨 3. 即夢 AI 2.5 繪圖與影片 Prompt 提詞", expanded=True):
                 st.markdown(res["jimeng_prompts"])
-
-if __name__ == "__main__":
-    main()
-.markdown(res["jimeng_prompts"])
 
 if __name__ == "__main__":
     main()
