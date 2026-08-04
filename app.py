@@ -37,7 +37,7 @@ if "users_db" not in st.session_state:
     }
 
 # =========================================================
-# 2. 輔助 API 呼叫函式
+# 2. 輔助 API 呼叫函式 (修復 API 模型名稱問題)
 # =========================================================
 def gemini_generate_text(prompt, image_bytes=None):
     """呼叫 Gemini API 進行文字生成或圖片分析 (使用 REST API)"""
@@ -45,7 +45,8 @@ def gemini_generate_text(prompt, image_bytes=None):
     if not api_key:
         return "⚠️ 請先在左側邊欄輸入或設定 GEMINI_API_KEY！"
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    # 修正重點：使用官方要求的模型完整名稱格式 (gemini-1.5-flash-latest)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
     
     parts = [{"text": prompt}]
@@ -323,6 +324,10 @@ def main():
 
             with st.expander("🎨 3. 即夢 AI 2.5 繪圖與影片 Prompt 提詞", expanded=True):
                 st.markdown(res["jimeng_prompts"])
+
+if __name__ == "__main__":
+    main()
+.markdown(res["jimeng_prompts"])
 
 if __name__ == "__main__":
     main()
