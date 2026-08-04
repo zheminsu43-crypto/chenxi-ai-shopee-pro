@@ -12,22 +12,6 @@ from PIL import Image, ImageOps
 # AI 蝦皮半自動化 2.5 PRO
 #
 # 免費 Gemini Flash 版
-#
-# Gemini 免費層負責：
-# - 商品圖片分析
-# - 商品資訊分析
-# - 蝦皮 / TikTok / Facebook / Instagram 文案
-# - 即夢 AI 2.5 生圖 Prompt
-# - 即夢 AI 2.5 影片 Prompt
-# - 15 秒影片腳本
-# - 影片分鏡
-# - 合規檢查
-#
-# 注意：
-# Gemini Flash 本身不在本程式內直接產生 MP4。
-# 本程式產生「影片腳本 / 分鏡 / Prompt」。
-# 真正影片可使用即夢或其他影片工具生成後，
-# 再上傳到本程式的影片中心預覽 / 下載。
 # =========================================================
 
 # =========================================================
@@ -133,9 +117,7 @@ for key, value in DEFAULT_STATE.items():
 # Gemini API Key
 # =========================================================
 def get_gemini_api_key():
-    """優先順序：Streamlit Secrets -> 環境變數 -> Session State。"""
     key = ""
-
     try:
         key = st.secrets.get("GEMINI_API_KEY", "")
     except Exception:
@@ -196,9 +178,7 @@ def gemini_generate_text(prompt, image_bytes=None, image_mime="image/jpeg"):
     if client is None:
         return "❌ Gemini Client 建立失敗，請確認 API Key。"
 
-    # 設定嘗試模型的順序，避免單一模型 404
     candidate_models = [GEMINI_MODEL, "gemini-1.5-flash", "gemini-2.0-flash"]
-    # 去重
     candidate_models = list(dict.fromkeys(candidate_models))
 
     contents = []
@@ -226,11 +206,9 @@ def gemini_generate_text(prompt, image_bytes=None, image_mime="image/jpeg"):
 
         except Exception as e:
             last_error = str(e)
-            # 如果是 404 說明此模型不存在，嘗試下一個模型
             if "404" in last_error.lower() or "not found" in last_error.lower():
                 continue
             else:
-                # 其他錯誤（如 401 密碼錯或 429 額度不足）直接跳出處理
                 break
 
     error_text = last_error
@@ -426,6 +404,444 @@ def check_login(username, password):
         return False, "帳號或密碼錯誤。"
 
     if str(member.get("status", "active")).lower() != "active":
+        return False, "此會員帳號已停用。"
+
+    saved_hash = str(member.get("password_hash", ""))
+
+    if not saved_hash or "$" not in saved_hash:
+        return False, "會員資料異常。"
+
+    if not verify_password(password, saved_hash):
+        return False, "帳號或密碼錯誤。"
+
+    expires_text = str(member.get("expires", ""))
+
+    try:
+        expires_date = date.fromisoformat(expires_text)
+    except Exception:
+        return False, "會員到期日資料異常。"
+
+    if date.today() > expires_date:
+        return False, "會員資格已到期。"
+
+    return True, member
+
+
+def logout():
+    st.session_state.logged_in = False
+    st.session_state.username = ""
+    st.session_state.user_role = "guest"
+    st.session_state.member = {}
+    st.session_state.analysis_results = None
+    st.session_state.last_video_name = ""
+    st.session_state.last_video_bytes = None
+    st.session_state.last_video_mime = "video/mp4"
+    st.session_state.last_video_ext = ".mp4"
+    st.rerun()
+
+
+# =========================================================
+# 圖片處理
+# =========================================================
+def prepare_image(uploaded_file):
+    if uploaded_file is None:
+        return None, None
+
+    raw = uploaded_file.getvalue()
+
+    if not raw:
+        raise ValueError("圖片檔案是空的。")
+
+    size_mb = len(raw) / 1024 / 1024
+
+    if size_mb > MAX_IMAGE_MB:
+        raise ValueError(
+            f"圖片大小為 {size_mb:.1f} MB，"
+            f"不可超過 {MAX_IMAGE_MB} MB。"
+        )
+
+    try:
+        image = Image.open(io.BytesIO(raw))
+        image = ImageOps.exif_transpose(image)
+        image.load()
+
+        if image.mode == "RGBA":
+            background = Image.new(
+                "RGB",
+                image.size,
+                "white",
+            )
+            background.paste(
+                image,
+                mask=image.getchannel("A"),
+            )
+            image = background
+        else:
+            image = image.convert("RGB")
+
+        image.thumbnail(
+            (MAX_IMAGE_SIZE, MAX_IMAGE_SIZE),
+            Image.Resampling.LANCZOS,
+        )
+
+        output = io.BytesIO()
+
+        image.save(
+            output,
+            format="JPEG",
+            quality=92,
+            optimize=True,
+        )
+
+        return image, output.getvalue()
+
+    except Exception as e:
+        raise ValueError(f"圖片讀取失敗：{e}")
+
+
+# =========================================================
+# 即夢核心規則
+# =========================================================
+JIMENG_CORE_RULES = """
+【商品身份鎖定】
+上傳商品圖片是唯一主要商品來源。
+
+必須維持：
+- 原品牌、原包裝、原形狀、原比例、原顏色、原材質、原 Logo、原標籤、原印刷文字、原包裝結構
+
+禁止：
+- 改品牌、改包裝、改 Logo、改文字、改顏色、商品變形、商品融化、商品漂移、商品閃爍、商品消失、商品變成其他商品、新增第二個商品、重複商品
+
+預設禁止：
+- 人物、手、模特兒、主持人、代言人、人物拿商品
+
+禁止：
+- 浮水印、假價格、假折扣、假贈品、假認證、假規格、假功效、醫療效果、未確認資訊
+
+影片全程必須維持同一商品身份。
+
+視覺方向：
+premium commercial product photography,
+realistic product details,
+clean composition,
+professional studio lighting,
+smooth cinematic camera,
+stable product identity.
+"""
+
+
+# =========================================================
+# 商品分析 Prompt
+# =========================================================
+def build_product_analysis_prompt(product_data):
+    return f"""
+你是「AI 蝦皮半自動化 2.5 PRO」的商品分析 AI。
+
+請分析使用者上傳的商品圖片與使用者輸入。
+
+【使用者資料】
+商品名稱：{product_data["product_name"] or "待確認"}
+商品價格：{product_data["price"] or "待確認"}
+商品成本：{product_data["cost"] or "待確認"}
+分潤比例：{product_data["commission"] or "待確認"}
+月銷量：{product_data["sales"] or "待確認"}
+商品評分：{product_data["rating"] or "待確認"}
+商品連結：{product_data["url"] or "待確認"}
+商品規格：{product_data["spec"] or "待確認"}
+補充資訊：{product_data["features"] or "待確認"}
+主要平台：{product_data["platform"]}
+
+【嚴格規則】
+1. 不得捏造商品資訊。
+2. 圖片看不清楚的資料寫「待確認」。
+3. 使用繁體中文。
+
+【輸出】
+# 1｜商品辨識
+商品名稱、品牌、類別、顏色、外觀、材質、包裝、Logo、可辨識文字、型號、規格。
+
+# 2｜商品特色
+列出 3～5 個能由圖片或使用者資料確認的特色。
+
+# 3｜AI 選品分析
+- 商品視覺吸引力、電商展示潛力、短影音展示潛力、內容製作難度、合規風險、推薦分數 0～100
+
+# 4｜圖片判斷
+圖片清晰度、主要商品、是否多商品、需要人工確認事項。
+
+# 5｜蝦皮展示建議
+主圖方向、細節圖方向。
+
+# 6｜TikTok 展示建議
+前三秒、商品展示、鏡頭、結尾。
+
+# 7｜即夢 AI 2.5 建議
+{JIMENG_CORE_RULES}
+"""
+
+
+# =========================================================
+# 完整生成 Prompt
+# =========================================================
+def build_full_generation_prompt(product_data, analysis):
+    return f"""
+你是「AI 蝦皮半自動化 2.5 PRO」的專業電商 AI。
+
+根據商品資料與商品圖片分析結果，產生完整電商內容。
+
+【商品資料】
+商品名稱：{product_data["product_name"] or "待確認"}
+價格：{product_data["price"] or "待確認"}
+規格：{product_data["spec"] or "待確認"}
+
+【圖片分析】
+{analysis}
+
+【生成需求】
+1. 蝦皮完整上架文案（標題、SEO關鍵字、完整描述、特色、規格、注意事項）
+2. TikTok 帶貨腳本（3秒Hook、15秒腳本、貼文、Hashtag）
+3. Facebook / Instagram 貼文
+4. 即夢 AI 2.5 英文生圖與影片 Prompt（含 Positive & Negative Prompt）
+5. 15 秒影片分鏡表（至少 5 個鏡頭）
+6. 合規檢查與發布前確認事項
+
+【即夢核心規則】
+{JIMENG_CORE_RULES}
+"""
+
+
+# =========================================================
+# 影片上傳
+# =========================================================
+VIDEO_MIME_MAP = {
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+}
+
+
+def get_video_info(uploaded_file):
+    if uploaded_file is None:
+        return None
+
+    raw = uploaded_file.getvalue()
+
+    if not raw:
+        raise ValueError("影片檔案是空的。")
+
+    size_mb = len(raw) / 1024 / 1024
+
+    if size_mb > MAX_VIDEO_MB:
+        raise ValueError(
+            f"影片大小 {size_mb:.1f} MB，超過 {MAX_VIDEO_MB} MB 上限。"
+        )
+
+    filename = uploaded_file.name or "video.mp4"
+    ext = os.path.splitext(filename)[1].lower()
+
+    mime = uploaded_file.type or VIDEO_MIME_MAP.get(
+        ext,
+        "video/mp4",
+    )
+
+    return {
+        "name": filename,
+        "bytes": raw,
+        "mime": mime,
+        "ext": ext,
+        "size_mb": size_mb,
+    }
+
+
+# =========================================================
+# 登入 / 註冊
+# =========================================================
+def auth_page():
+    st.markdown(
+        '<div class="main-title">🛒 AI 蝦皮半自動化 2.5 PRO</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="main-subtitle">免費 Gemini Flash × 電商 AI × 即夢 AI 2.5</div>',
+        unsafe_allow_html=True,
+    )
+
+    tab_login, tab_register = st.tabs(["🔐 登入", "📝 註冊"])
+
+    with tab_login:
+        st.subheader("🔑 會員登入")
+
+        username = st.text_input(
+            "帳號",
+            key="login_username",
+        )
+
+        password = st.text_input(
+            "密碼",
+            type="password",
+            key="login_password",
+        )
+
+        if st.button(
+            "登入",
+            type="primary",
+            use_container_width=True,
+        ):
+            success, result = check_login(username, password)
+
+            if success:
+                st.session_state.logged_in = True
+                st.session_state.username = result["username"]
+                st.session_state.user_role = result["role"]
+                st.session_state.member = result
+                st.success("登入成功！")
+                st.rerun()
+            else:
+                st.error(result)
+
+        st.info("預設管理員測試帳號：admin / admin123")
+
+    with tab_register:
+        st.subheader("📝 建立會員")
+
+        name = st.text_input(
+            "姓名 / 暱稱",
+            key="register_name",
+        )
+
+        username = st.text_input(
+            "帳號",
+            key="register_username",
+        )
+
+        email = st.text_input(
+            "Email",
+            key="register_email",
+        )
+
+        password = st.text_input(
+            "密碼",
+            type="password",
+            key="register_password",
+        )
+
+        confirm = st.text_input(
+            "再次輸入密碼",
+            type="password",
+            key="register_confirm",
+        )
+
+        if st.button(
+            "建立帳號",
+            use_container_width=True,
+        ):
+            if password != confirm:
+                st.error("兩次密碼不一致。")
+            else:
+                success, result = create_member(
+                    username,
+                    password,
+                    name,
+                    email,
+                )
+
+                if success:
+                    st.success("🎉 註冊成功！請回到登入頁登入。")
+                else:
+                    st.error(result)
+
+
+# =========================================================
+# Sidebar
+# =========================================================
+def sidebar():
+    with st.sidebar:
+        st.title("🛒 功能選單")
+
+        if st.session_state.logged_in:
+            member = st.session_state.member
+
+            st.write(f"👤 **{member.get('name') or member.get('username')}**")
+            st.caption(f"帳號：{member.get('username')}")
+            st.caption(f"身分：{member.get('role')}")
+            st.caption(f"到期日：{member.get('expires')}")
+
+            if st.button(
+                "🚪 登出",
+                use_container_width=True,
+            ):
+                logout()
+        else:
+            st.info("請先登入會員。")
+
+        st.divider()
+
+        st.subheader("🤖 Gemini API 設定")
+
+        key = st.text_input(
+            "Gemini API Key",
+            value=st.session_state.get("api_key", ""),
+            type="password",
+            help="不要把 API Key 寫進 GitHub 或公開程式碼。",
+        )
+
+        if key != st.session_state.get("api_key", ""):
+            st.session_state.api_key = key
+            reset_gemini_client()
+
+        if get_gemini_api_key():
+            st.success("API Key 已設定")
+        else:
+            st.warning("尚未設定 API Key")
+
+        st.caption(f"預設模型：{GEMINI_MODEL}")
+
+
+# =========================================================
+# 管理員
+# =========================================================
+def admin_page():
+    st.header("👑 管理員中心")
+
+    members = load_members()
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.metric("會員總數", len(members))
+
+    with col2:
+        active_count = sum(
+            1 for m in members if m.get("status") == "active"
+        )
+        st.metric("啟用會員", active_count)
+
+    st.divider()
+
+    for member in members:
+        username = member.get("username", "")
+
+        if username == ADMIN_USERNAME:
+            continue
+
+        with st.expander(f"👤 {username}"):
+            st.write(f"姓名：{member.get('name', '')}")
+            st.write(f"Email：{member.get('email', '')}")
+            st.write(f"角色：{member.get('role', 'member')}")
+            st.write(f"狀態：{member.get('status', 'active')}")
+            st.write(f"到期：{member.get('expires', '')}")
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                if st.button("啟用", key=f"enable_{member['id']}"):
+                    update_member(member["id"], {"status": "active"})
+                    st.rerun()
+
+            with col2:
+                if st.button("停用", key=f"disable_{member['id']}"):
+              ember.get("status", "active")).lower() != "active":
         return False, "此會員帳號已停用。"
 
     saved_hash = str(member.get("password_hash", ""))
