@@ -9,13 +9,10 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 # =========================================================
-# AI 蝦皮半自動化 2.5 PRO
-# 免費 Gemini Flash 版
+# AI 蝦皮半自動化 2.5 PRO (圖文識別 + CrewAI + Gemini 整合版)
 # =========================================================
 
-# =========================================================
-# Google Gemini SDK
-# =========================================================
+# SDK 載入
 try:
     from google import genai
     from google.genai import types
@@ -23,12 +20,18 @@ except ImportError:
     genai = None
     types = None
 
+try:
+    from crewai import Agent, Task, Crew, Process
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    HAS_CREWAI = True
+except ImportError:
+    HAS_CREWAI = False
 
-# =========================================================
 # 頁面設定
-# =========================================================
 APP_NAME = "AI 蝦皮半自動化 2.5 PRO"
 GEMINI_MODEL = "gemini-2.5-flash"
+MAX_IMAGE_MB = 20
+MAX_IMAGE_SIZE = 1600
 
 st.set_page_config(
     page_title=APP_NAME,
@@ -37,388 +40,147 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# =========================================================
-# 基本設定
-# =========================================================
-DATA_DIR = "data"
-MEMBERS_FILE = os.path.join(DATA_DIR, "members.json")
-
-MAX_IMAGE_MB = 20
-MAX_IMAGE_SIZE = 1600
-MAX_VIDEO_MB = 300
-DEFAULT_MEMBER_DAYS = 30
-
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "admin123"
-
-os.makedirs(DATA_DIR, exist_ok=True)
-
-
-# =========================================================
-# CSS
-# =========================================================
-st.markdown(
-    """
+# 樣式
+st.markdown("""
     <style>
-    .main-title {
-        text-align: center;
-        font-size: 42px;
-        font-weight: 800;
-        margin-top: 20px;
-        margin-bottom: 8px;
-    }
-
-    .main-subtitle {
-        text-align: center;
-        opacity: .72;
-        margin-bottom: 25px;
-    }
-
-    .small-note {
-        font-size: 13px;
-        opacity: .72;
-    }
-
-    .video-title {
-        font-size: 26px;
-        font-weight: 800;
-        margin-top: 10px;
-        margin-bottom: 10px;
-    }
+    .main-title { text-align: center; font-size: 38px; font-weight: 800; margin-top: 15px; }
+    .main-subtitle { text-align: center; opacity: .72; margin-bottom: 25px; }
     </style>
-    """,
-    unsafe_allow_html=True,
-)
+""", unsafe_allow_html=True)
 
+# Session State 初始化
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = True  # 預設為已登入方便快速測試
+if "api_key" not in st.session_state:
+    st.session_state.api_key = ""
 
-# =========================================================
-# Session State
-# =========================================================
-DEFAULT_STATE = {
-    "logged_in": False,
-    "username": "",
-    "user_role": "guest",
-    "member": {},
-    "api_key": "",
-    "analysis_results": None,
-    "last_video_name": "",
-    "last_video_bytes": None,
-    "last_video_mime": "video/mp4",
-    "last_video_ext": ".mp4",
-}
+# 圖片處理函式
+def process_uploaded_image(uploaded_file):
+    if uploaded_file is None:
+        return None, None
+    raw = uploaded_file.getvalue()
+    if len(raw) / (1024 * 1024) > MAX_IMAGE_MB:
+        raise ValueError(f"圖片大小超過 {MAX_IMAGE_MB}MB 上限。")
+    
+    image = Image.open(io.BytesIO(raw))
+    image = ImageOps.exif_transpose(image)
+    if image.mode in ("RGBA", "P"):
+        image = image.convert("RGB")
+    image.thumbnail((MAX_IMAGE_SIZE, MAX_IMAGE_SIZE), Image.Resampling.LANCZOS)
+    
+    output = io.BytesIO()
+    image.save(output, format="JPEG", quality=92)
+    return image, output.getvalue()
 
-for key, value in DEFAULT_STATE.items():
-    if key not in st.session_state:
-        st.session_state[key] = value
-
-
-# =========================================================
-# Gemini API Key
-# =========================================================
+# API Key 讀取
 def get_gemini_api_key():
-    key = ""
-    try:
-        key = st.secrets.get("GEMINI_API_KEY", "")
-    except Exception:
-        key = ""
-
-    if not key:
-        key = os.getenv("GEMINI_API_KEY", "")
-
-    if not key:
-        key = st.session_state.get("api_key", "")
-
+    key = st.secrets.get("GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "") or st.session_state.get("api_key", "")
     return str(key).strip()
 
-
-# =========================================================
-# Gemini Client
-# =========================================================
-@st.cache_resource
-def create_gemini_client(api_key):
-    if not api_key or genai is None:
-        return None
-
-    try:
-        return genai.Client(api_key=api_key)
-    except Exception:
-        return None
-
-
-def reset_gemini_client():
-    try:
-        create_gemini_client.clear()
-    except Exception:
-        pass
-
-
-# =========================================================
-# Gemini API
-# =========================================================
-def gemini_generate_text(prompt, image_bytes=None, image_mime="image/jpeg"):
-    api_key = get_gemini_api_key()
-
-    if not api_key:
-        return (
-            "❌ 尚未設定 GEMINI_API_KEY。\n\n"
-            "請在左側 Gemini API 設定輸入 API Key，"
-            "或放入 Streamlit Secrets。"
-        )
-
-    if genai is None or types is None:
-        return (
-            "❌ 尚未安裝 google-genai。\n\n"
-            "請確認 requirements.txt 包含：\n"
-            "google-genai"
-        )
-
-    client = create_gemini_client(api_key)
-
-    if client is None:
-        return "❌ Gemini Client 建立失敗，請確認 API Key。"
-
-    candidate_models = [GEMINI_MODEL, "gemini-1.5-flash", "gemini-2.0-flash"]
-    candidate_models = list(dict.fromkeys(candidate_models))
-
+# 多模態 Gemini 生成（文字 + 圖片）
+def generate_multimodal_content(api_key, prompt, image_bytes=None):
+    client = genai.Client(api_key=api_key)
     contents = []
     if image_bytes:
-        contents.append(
-            types.Part.from_bytes(
-                data=image_bytes,
-                mime_type=image_mime,
-            )
-        )
+        contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
     contents.append(prompt)
-
-    last_error = ""
-    for model_name in candidate_models:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-            )
-
-            text = getattr(response, "text", None)
-
-            if text:
-                return str(text)
-
-        except Exception as e:
-            last_error = str(e)
-            if "404" in last_error.lower() or "not found" in last_error.lower():
-                continue
-            else:
-                break
-
-    error_text = last_error
-    lower = error_text.lower()
-
-    if "api key" in lower or "api_key" in lower:
-        return "❌ Gemini API Key 錯誤，請重新建立或確認 Key。"
-
-    if "401" in lower:
-        return "❌ Gemini API Key 無效或未授權。"
-
-    if "403" in lower:
-        return f"❌ Gemini API 權限不足。\n\n詳細錯誤：{error_text}"
-
-    if "429" in lower or "quota" in lower:
-        return (
-            "❌ Gemini 免費層級目前遇到額度或速率限制。\n\n"
-            "請稍後再試，或確認 Google AI Studio 的用量狀態。"
-        )
-
-    if "404" in lower or "not found" in lower:
-        return (
-            f"❌ 所選的 Gemini 模型目前無法使用。\n\n"
-            f"已嘗試模型：{', '.join(candidate_models)}\n\n"
-            f"詳細錯誤：{error_text}"
-        )
-
-    return f"❌ Gemini 呼叫失敗。\n\n{error_text}"
-
-
-# =========================================================
-# 密碼處理
-# =========================================================
-def hash_password(password):
-    salt = secrets.token_hex(16)
-    digest = hashlib.sha256(
-        (salt + str(password)).encode("utf-8")
-    ).hexdigest()
-    return f"{salt}${digest}"
-
-
-def verify_password(password, saved_password):
-    try:
-        salt, saved_hash = saved_password.split("$", 1)
-        digest = hashlib.sha256(
-            (salt + str(password)).encode("utf-8")
-        ).hexdigest()
-        return secrets.compare_digest(digest, saved_hash)
-    except Exception:
-        return False
-
-
-# =========================================================
-# 會員資料處理
-# =========================================================
-def load_members():
-    if not os.path.exists(MEMBERS_FILE):
-        return []
-
-    try:
-        with open(MEMBERS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        if isinstance(data, list):
-            return data
-    except Exception:
-        pass
-
-    return []
-
-
-def save_members(members):
-    os.makedirs(DATA_DIR, exist_ok=True)
-
-    with open(MEMBERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(
-            members,
-            f,
-            ensure_ascii=False,
-            indent=2,
-        )
-
-
-def ensure_admin():
-    members = load_members()
-
-    for member in members:
-        if str(member.get("username", "")).lower() == ADMIN_USERNAME:
-            return
-
-    members.append(
-        {
-            "id": secrets.token_hex(8),
-            "username": ADMIN_USERNAME,
-            "password_hash": hash_password(ADMIN_PASSWORD),
-            "name": "系統管理員",
-            "email": "",
-            "role": "admin",
-            "status": "active",
-            "expires": (
-                date.today() + timedelta(days=3650)
-            ).isoformat(),
-            "created_at": datetime.now().isoformat(),
-        }
+    
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=contents
     )
+    return response.text
 
-    save_members(members)
+# 側邊欄
+def sidebar():
+    with st.sidebar:
+        st.title("🛒 功能選單")
+        st.subheader("🤖 Gemini API 設定")
+        key = st.text_input("Gemini API Key", value=st.session_state.get("api_key", ""), type="password")
+        if key != st.session_state.get("api_key", ""):
+            st.session_state.api_key = key
 
+# 主畫面（支援傳圖與自動生成）
+def main_app_page():
+    st.header("📸 AI 蝦皮圖文辨識 ➔ 爆款文案與即夢 Prompt 生成器")
+    st.caption("上傳商品圖片，AI 將自動辨識外觀特徵並產出蝦皮文案、TikTok 腳本與即夢 2.5 Prompt")
 
-ensure_admin()
+    col1, col2 = st.columns([1, 1])
 
+    with col1:
+        st.subheader("📥 1. 上傳商品圖片（可選）")
+        uploaded_file = st.file_uploader("選擇商品圖片 (JPG/PNG)", type=["jpg", "jpeg", "png"])
+        img_obj, img_bytes = None, None
+        
+        if uploaded_file:
+            try:
+                img_obj, img_bytes = process_uploaded_image(uploaded_file)
+                st.image(img_obj, caption="已上傳商品預覽", use_container_width=True)
+            except Exception as e:
+                st.error(f"圖片讀取失敗: {e}")
 
-def find_member(username):
-    username = str(username).strip().lower()
+        st.subheader("📝 2. 輸入商品基本資訊")
+        p_name = st.text_input("商品名稱（可寫大略名稱，AI會參考圖片補全）", placeholder="例如：波士頓大龍蝦")
+        p_features = st.text_area("補充特色/規格（選填）", placeholder="例如：急速冷凍、500g/隻")
+        p_platform = st.selectbox("銷售平台", ["蝦皮購物", "TikTok 賣場", "全平台整合"])
 
-    for member in load_members():
-        if str(member.get("username", "")).lower() == username:
-            return member
+        start_btn = st.button("🚀 開始全自動圖文分析與生成", type="primary", use_container_width=True)
 
-    return None
+    with col2:
+        st.subheader("📋 3. AI 產出結果")
+        if start_btn:
+            api_key = get_gemini_api_key()
+            if not api_key:
+                st.error("❌ 請先在左側欄輸入 Gemini API Key！")
+            elif genai is None:
+                st.error("❌ 尚未安裝 google-genai 套件，請檢查 requirements.txt")
+            else:
+                with st.spinner("🤖 AI 正在辨識圖片並撰寫文案與即夢 Prompt 中..."):
+                    try:
+                        prompt = f"""
+                        你是一個頂級電商視覺與文案專家。
+                        
+                        請詳細分析【上傳的商品圖片】與以下輸入資料：
+                        - 商品名稱：{p_name or "請根據圖片辨識"}
+                        - 補充資訊：{p_features or "請根據圖片辨識"}
+                        - 平台：{p_platform}
 
+                        請輸出完整的電商行銷資料庫：
 
-def find_member_by_email(email):
-    email = str(email).strip().lower()
+                        # 1｜📸 商品視覺辨識分析
+                        - 視覺特徵：外觀、顏色、材質、包裝、賣點觀察。
 
-    if not email:
-        return None
+                        # 2｜🛒 蝦皮爆款文案
+                        - 蝦皮搜尋優化標題 (包含關鍵字、品牌/規格、吸引點擊詞)
+                        - 3 大核心購買賣點 (條列式)
+                        - 完整蝦皮商品描述 (含使用情境、注意事項、Emoji排版)
 
-    for member in load_members():
-        if str(member.get("email", "")).lower() == email:
-            return member
+                        # 3｜🎬 TikTok 15秒短影音帶貨腳本
+                        - 前3秒黃金 Hook (吸睛開場)
+                        - 15 秒分鏡畫面與台詞規劃
 
-    return None
+                        # 4｜🎨 即夢 AI 2.5 英文 Prompt 指南
+                        【嚴格規則】維持原商品外觀、顏色與Logo，預設無人物。
+                        - **Positive Prompt (生圖用)**: Commercial product photography of this exact item, studio lighting, ultra-realistic, 8k, photorealistic.
+                        - **Negative Prompt**: watermark, blurry, extra objects, modified logo, deformities.
+                        - **Video Prompt (生影片用)**: Smooth cinematic camera rotating around the product, studio lighting.
+                        """
+                        
+                        result = generate_multimodal_content(api_key, prompt, img_bytes)
+                        st.success("🎉 全自動生成完成！")
+                        st.divider()
+                        st.markdown(result)
+                        
+                    except Exception as e:
+                        st.error(f"❌ 生成失敗：{e}")
 
+# 主程式
+def main():
+    sidebar()
+    main_app_page()
 
-def create_member(username, password, name, email):
-    username = str(username).strip().lower()
-    password = str(password)
-    name = str(name).strip()
-    email = str(email).strip().lower()
-
-    if len(username) < 3:
-        return False, "帳號至少需要 3 個字元。"
-
-    if len(password) < 6:
-        return False, "密碼至少需要 6 個字元。"
-
-    if find_member(username):
-        return False, "帳號已存在。"
-
-    if email and find_member_by_email(email):
-        return False, "Email 已註冊。"
-
-    expires = (
-        date.today() + timedelta(days=DEFAULT_MEMBER_DAYS)
-    ).isoformat()
-
-    member = {
-        "id": secrets.token_hex(8),
-        "username": username,
-        "password_hash": hash_password(password),
-        "name": name,
-        "email": email,
-        "role": "member",
-        "status": "active",
-        "expires": expires,
-        "created_at": datetime.now().isoformat(),
-    }
-
-    members = load_members()
-    members.append(member)
-    save_members(members)
-
-    return True, member
-
-
-def update_member(member_id, updates):
-    members = load_members()
-
-    for member in members:
-        if member.get("id") == member_id:
-            member.update(updates)
-            save_members(members)
-            return True
-
-    return False
-
-
-def check_login(username, password):
-    member = find_member(username)
-
-    if not member:
-        return False, "帳號或密碼錯誤。"
-
-    if str(member.get("status", "active")).lower() != "active":
-        return False, "此會員帳號已停用。"
-
-    saved_hash = str(member.get("password_hash", ""))
-
-    if not saved_hash or "$" not in saved_hash:
-        return False, "會員資料異常。"
-
-    if not verify_password(password, saved_hash):
-        return False, "帳號或密碼錯誤。"
-
-    expires_text = str(member.get("expires", ""))
-
-    try:
-        expires_date = date.fromisoformat(expires_text)
-    except Exception:
-        return False, "會員到期日資料異常。"
+if __name__ == "__main__":
+    main()False, "會員到期日資料異常。"
 
     if date.today() > expires_date:
         return False, "會員資格已到期。"
