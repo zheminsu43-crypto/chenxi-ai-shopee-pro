@@ -9,23 +9,18 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 # =========================================================
-# AI 蝦皮半自動化 2.5 PRO (圖文識別 + CrewAI + Gemini 整合版)
+# AI 蝦皮半自動化 2.5 PRO (圖文識別 + Gemini 2.5 Flash 完整版)
 # =========================================================
 
 # SDK 載入
 try:
     from google import genai
     from google.genai import types
+    HAS_GENAI = True
 except ImportError:
     genai = None
     types = None
-
-try:
-    from crewai import Agent, Task, Crew, Process
-    from langchain_google_genai import ChatGoogleGenerativeAI
-    HAS_CREWAI = True
-except ImportError:
-    HAS_CREWAI = False
+    HAS_GENAI = False
 
 # 頁面設定
 APP_NAME = "AI 蝦皮半自動化 2.5 PRO"
@@ -40,7 +35,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# 樣式
+# 樣式設定
 st.markdown("""
     <style>
     .main-title { text-align: center; font-size: 38px; font-weight: 800; margin-top: 15px; }
@@ -49,8 +44,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Session State 初始化
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = True  # 預設為已登入方便快速測試
 if "api_key" not in st.session_state:
     st.session_state.api_key = ""
 
@@ -99,16 +92,21 @@ def sidebar():
         key = st.text_input("Gemini API Key", value=st.session_state.get("api_key", ""), type="password")
         if key != st.session_state.get("api_key", ""):
             st.session_state.api_key = key
+        
+        if get_gemini_api_key():
+            st.success("✅ API Key 已載入")
+        else:
+            st.warning("⚠️ 尚未設定 API Key")
 
-# 主畫面（支援傳圖與自動生成）
+# 主畫面
 def main_app_page():
-    st.header("📸 AI 蝦皮圖文辨識 ➔ 爆款文案與即夢 Prompt 生成器")
-    st.caption("上傳商品圖片，AI 將自動辨識外觀特徵並產出蝦皮文案、TikTok 腳本與即夢 2.5 Prompt")
+    st.markdown(f'<div class="main-title">🛒 {APP_NAME}</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-subtitle">AI 蝦皮圖文辨識 ➔ 爆款文案與即夢 2.5 Prompt 全自動生成</div>', unsafe_allow_html=True)
 
     col1, col2 = st.columns([1, 1])
 
     with col1:
-        st.subheader("📥 1. 上傳商品圖片（可選）")
+        st.subheader("📥 1. 上傳商品圖片（支援 AI 圖文辨識）")
         uploaded_file = st.file_uploader("選擇商品圖片 (JPG/PNG)", type=["jpg", "jpeg", "png"])
         img_obj, img_bytes = None, None
         
@@ -120,8 +118,8 @@ def main_app_page():
                 st.error(f"圖片讀取失敗: {e}")
 
         st.subheader("📝 2. 輸入商品基本資訊")
-        p_name = st.text_input("商品名稱（可寫大略名稱，AI會參考圖片補全）", placeholder="例如：波士頓大龍蝦")
-        p_features = st.text_area("補充特色/規格（選填）", placeholder="例如：急速冷凍、500g/隻")
+        p_name = st.text_input("商品名稱", placeholder="例如：波士頓大龍蝦（未填寫時 AI 將自動辨識）")
+        p_features = st.text_area("補充特色與規格", placeholder="例如：500g/隻，急速生凍，肉質緊實彈牙")
         p_platform = st.selectbox("銷售平台", ["蝦皮購物", "TikTok 賣場", "全平台整合"])
 
         start_btn = st.button("🚀 開始全自動圖文分析與生成", type="primary", use_container_width=True)
@@ -132,35 +130,35 @@ def main_app_page():
             api_key = get_gemini_api_key()
             if not api_key:
                 st.error("❌ 請先在左側欄輸入 Gemini API Key！")
-            elif genai is None:
+            elif not HAS_GENAI:
                 st.error("❌ 尚未安裝 google-genai 套件，請檢查 requirements.txt")
             else:
-                with st.spinner("🤖 AI 正在辨識圖片並撰寫文案與即夢 Prompt 中..."):
+                with st.spinner("🤖 AI 正在分析圖片並撰寫文案與即夢 Prompt 中..."):
                     try:
                         prompt = f"""
                         你是一個頂級電商視覺與文案專家。
                         
                         請詳細分析【上傳的商品圖片】與以下輸入資料：
-                        - 商品名稱：{p_name or "請根據圖片辨識"}
-                        - 補充資訊：{p_features or "請根據圖片辨識"}
-                        - 平台：{p_platform}
+                        - 商品名稱：{p_name or "請根據圖片自主辨識"}
+                        - 補充資訊：{p_features or "無"}
+                        - 主要平台：{p_platform}
 
-                        請輸出完整的電商行銷資料庫：
+                        請輸出完整的電商行銷資料包：
 
                         # 1｜📸 商品視覺辨識分析
-                        - 視覺特徵：外觀、顏色、材質、包裝、賣點觀察。
+                        - 視覺特徵：外觀細節、顏色、材質、包裝、賣點觀察。
 
                         # 2｜🛒 蝦皮爆款文案
-                        - 蝦皮搜尋優化標題 (包含關鍵字、品牌/規格、吸引點擊詞)
+                        - 蝦皮高轉化標題 (含關鍵字、品牌/規格、高吸引力詞組)
                         - 3 大核心購買賣點 (條列式)
-                        - 完整蝦皮商品描述 (含使用情境、注意事項、Emoji排版)
+                        - 完整蝦皮商品描述 (含使用情境、注意事項、Emoji視覺排版)
 
                         # 3｜🎬 TikTok 15秒短影音帶貨腳本
-                        - 前3秒黃金 Hook (吸睛開場)
+                        - 前 3 秒黃金 Hook (吸睛開場)
                         - 15 秒分鏡畫面與台詞規劃
 
                         # 4｜🎨 即夢 AI 2.5 英文 Prompt 指南
-                        【嚴格規則】維持原商品外觀、顏色與Logo，預設無人物。
+                        【嚴格規則】保持原商品外觀、顏色與 Logo 一致，預設無人物。
                         - **Positive Prompt (生圖用)**: Commercial product photography of this exact item, studio lighting, ultra-realistic, 8k, photorealistic.
                         - **Negative Prompt**: watermark, blurry, extra objects, modified logo, deformities.
                         - **Video Prompt (生影片用)**: Smooth cinematic camera rotating around the product, studio lighting.
@@ -174,193 +172,13 @@ def main_app_page():
                     except Exception as e:
                         st.error(f"❌ 生成失敗：{e}")
 
-# 主程式
+# 主程式入口
 def main():
     sidebar()
     main_app_page()
 
 if __name__ == "__main__":
-    main()False, "會員到期日資料異常。"
-
-    if date.today() > expires_date:
-        return False, "會員資格已到期。"
-
-    return True, member
-
-
-def logout():
-    st.session_state.logged_in = False
-    st.session_state.username = ""
-    st.session_state.user_role = "guest"
-    st.session_state.member = {}
-    st.session_state.analysis_results = None
-    st.session_state.last_video_name = ""
-    st.session_state.last_video_bytes = None
-    st.session_state.last_video_mime = "video/mp4"
-    st.session_state.last_video_ext = ".mp4"
-    st.rerun()
-
-
-# =========================================================
-# 圖片處理
-# =========================================================
-def prepare_image(uploaded_file):
-    if uploaded_file is None:
-        return None, None
-
-    raw = uploaded_file.getvalue()
-
-    if not raw:
-        raise ValueError("圖片檔案是空的。")
-
-    size_mb = len(raw) / 1024 / 1024
-
-    if size_mb > MAX_IMAGE_MB:
-        raise ValueError(
-            f"圖片大小為 {size_mb:.1f} MB，"
-            f"不可超過 {MAX_IMAGE_MB} MB。"
-        )
-
-    try:
-        image = Image.open(io.BytesIO(raw))
-        image = ImageOps.exif_transpose(image)
-        image.load()
-
-        if image.mode == "RGBA":
-            background = Image.new(
-                "RGB",
-                image.size,
-                "white",
-            )
-            background.paste(
-                image,
-                mask=image.getchannel("A"),
-            )
-            image = background
-        else:
-            image = image.convert("RGB")
-
-        image.thumbnail(
-            (MAX_IMAGE_SIZE, MAX_IMAGE_SIZE),
-            Image.Resampling.LANCZOS,
-        )
-
-        output = io.BytesIO()
-
-        image.save(
-            output,
-            format="JPEG",
-            quality=92,
-            optimize=True,
-        )
-
-        return image, output.getvalue()
-
-    except Exception as e:
-        raise ValueError(f"圖片讀取失敗：{e}")
-
-
-# =========================================================
-# 即夢核心規則
-# =========================================================
-JIMENG_CORE_RULES = """
-【商品身份鎖定】
-上傳商品圖片是唯一主要商品來源。
-
-必須維持：
-- 原品牌、原包裝、原形狀、原比例、原顏色、原材質、原 Logo、原標籤、原印刷文字、原包裝結構
-
-禁止：
-- 改品牌、改包裝、改 Logo、改文字、改顏色、商品變形、商品融化、商品漂移、商品閃爍、商品消失、商品變成其他商品、新增第二個商品、重複商品
-
-預設禁止：
-- 人物、手、模特兒、主持人、代言人、人物拿商品
-
-禁止：
-- 浮水印、假價格、假折扣、假贈品、假認證、假規格、假功效、醫療效果、未確認資訊
-
-影片全程必須維持同一商品身份。
-
-視覺方向：
-premium commercial product photography,
-realistic product details,
-clean composition,
-professional studio lighting,
-smooth cinematic camera,
-stable product identity.
-"""
-
-
-# =========================================================
-# 商品分析 Prompt
-# =========================================================
-def build_product_analysis_prompt(product_data):
-    return f"""
-你是「AI 蝦皮半自動化 2.5 PRO」的商品分析 AI。
-
-請分析使用者上傳的商品圖片與使用者輸入。
-
-【使用者資料】
-商品名稱：{product_data["product_name"] or "待確認"}
-商品價格：{product_data["price"] or "待確認"}
-商品成本：{product_data["cost"] or "待確認"}
-分潤比例：{product_data["commission"] or "待確認"}
-月銷量：{product_data["sales"] or "待確認"}
-商品評分：{product_data["rating"] or "待確認"}
-商品連結：{product_data["url"] or "待確認"}
-商品規格：{product_data["spec"] or "待確認"}
-補充資訊：{product_data["features"] or "待確認"}
-主要平台：{product_data["platform"]}
-
-【嚴格規則】
-1. 不得捏造商品資訊。
-2. 圖片看不清楚的資料寫「待確認」。
-3. 使用繁體中文。
-
-【輸出】
-# 1｜商品辨識
-商品名稱、品牌、類別、顏色、外觀、材質、包裝、Logo、可辨識文字、型號、規格。
-
-# 2｜商品特色
-列出 3～5 個能由圖片或使用者資料確認的特色。
-
-# 3｜AI 選品分析
-- 商品視覺吸引力、電商展示潛力、短影音展示潛力、內容製作難度、合規風險、推薦分數 0～100
-
-# 4｜圖片判斷
-圖片清晰度、主要商品、是否多商品、需要人工確認事項。
-
-# 5｜蝦皮展示建議
-主圖方向、細節圖方向。
-
-# 6｜TikTok 展示建議
-前三秒、商品展示、鏡頭、結尾。
-
-# 7｜即夢 AI 2.5 建議
-{JIMENG_CORE_RULES}
-"""
-
-
-# =========================================================
-# 完整生成 Prompt
-# =========================================================
-def build_full_generation_prompt(product_data, analysis):
-    return f"""
-你是「AI 蝦皮半自動化 2.5 PRO」的專業電商 AI。
-
-根據商品資料與商品圖片分析結果，產生完整電商內容。
-
-【商品資料】
-商品名稱：{product_data["product_name"] or "待確認"}
-價格：{product_data["price"] or "待確認"}
-規格：{product_data["spec"] or "待確認"}
-
-【圖片分析】
-{analysis}
-
-【生成需求】
-1. 蝦皮完整上架文案（標題、SEO關鍵字、完整描述、特色、規格、注意事項）
-2. TikTok 帶貨腳本（3秒Hook、15秒腳本、貼文、Hashtag）
+    main()ag）
 3. Facebook / Instagram 貼文
 4. 即夢 AI 2.5 英文生圖與影片 Prompt（含 Positive & Negative Prompt）
 5. 15 秒影片分鏡表（至少 5 個鏡頭）
