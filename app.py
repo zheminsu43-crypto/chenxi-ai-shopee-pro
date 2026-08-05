@@ -9,7 +9,7 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 # =========================================================
-# AI 蝦皮半自動化 2.5 PRO (圖文識別 + Gemini 2.5 Flash 完整版)
+# AI 蝦皮半自動化 2.5 PRO (多模型相容修復版)
 # =========================================================
 
 # SDK 載入
@@ -24,7 +24,6 @@ except ImportError:
 
 # 頁面設定
 APP_NAME = "AI 蝦皮半自動化 2.5 PRO"
-GEMINI_MODEL = "gemini-2.5-flash"
 MAX_IMAGE_MB = 20
 MAX_IMAGE_SIZE = 1600
 
@@ -70,7 +69,7 @@ def get_gemini_api_key():
     key = st.secrets.get("GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "") or st.session_state.get("api_key", "")
     return str(key).strip()
 
-# 多模態 Gemini 生成（文字 + 圖片）
+# 多模態 Gemini 生成（具備多模型自動降級相容機制）
 def generate_multimodal_content(api_key, prompt, image_bytes=None):
     client = genai.Client(api_key=api_key)
     contents = []
@@ -78,11 +77,23 @@ def generate_multimodal_content(api_key, prompt, image_bytes=None):
         contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
     contents.append(prompt)
     
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=contents
-    )
-    return response.text
+    # 備選模型清單：若首選模型不可用，自動嘗試下一個
+    candidate_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"]
+    last_error = None
+
+    for model_name in candidate_models:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents
+            )
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            last_error = e
+            continue
+            
+    raise Exception(f"所有模型嘗試皆失敗。最後錯誤資訊：{last_error}")
 
 # 側邊欄
 def sidebar():
