@@ -9,7 +9,7 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 # =========================================================
-# AI 蝦皮半自動化 2.5 PRO (多模型相容修復版)
+# AI 蝦皮半自動化 2.5 PRO (正式修復 API 模型相容性版)
 # =========================================================
 
 # SDK 載入
@@ -69,7 +69,7 @@ def get_gemini_api_key():
     key = st.secrets.get("GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY", "") or st.session_state.get("api_key", "")
     return str(key).strip()
 
-# 多模態 Gemini 生成（具備多模型自動降級相容機制）
+# 多模態 Gemini 生成（優先使用目前穩定的 2.0-flash / 1.5-flash 模型）
 def generate_multimodal_content(api_key, prompt, image_bytes=None):
     client = genai.Client(api_key=api_key)
     contents = []
@@ -77,7 +77,7 @@ def generate_multimodal_content(api_key, prompt, image_bytes=None):
         contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
     contents.append(prompt)
     
-    # 備選模型清單：若首選模型不可用，自動嘗試下一個
+    # 依序輪詢可用模型
     candidate_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"]
     last_error = None
 
@@ -93,7 +93,7 @@ def generate_multimodal_content(api_key, prompt, image_bytes=None):
             last_error = e
             continue
             
-    raise Exception(f"所有模型嘗試皆失敗。最後錯誤資訊：{last_error}")
+    raise Exception(f"無法存取任何 Gemini 模型。詳細錯誤：{last_error}")
 
 # 側邊欄
 def sidebar():
