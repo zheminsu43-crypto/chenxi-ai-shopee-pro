@@ -176,7 +176,6 @@ st.markdown(
 # ============================================================
 
 def hash_password(password, salt=None):
-
     if salt is None:
         salt = secrets.token_hex(16)
 
@@ -191,25 +190,16 @@ def hash_password(password, salt=None):
 
 
 def verify_password(password, stored):
-
     try:
-
         salt, digest = stored.split("$", 1)
-
         check = hashlib.pbkdf2_hmac(
             "sha256",
             password.encode("utf-8"),
             salt.encode("utf-8"),
             200000,
         ).hex()
-
-        return secrets.compare_digest(
-            check,
-            digest,
-        )
-
+        return secrets.compare_digest(check, digest)
     except Exception:
-
         return False
 
 
@@ -218,21 +208,13 @@ def verify_password(password, stored):
 # ============================================================
 
 def load_members():
-
     if not MEMBERS_FILE.exists():
         return []
 
     try:
-
-        data = json.loads(
-            MEMBERS_FILE.read_text(
-                encoding="utf-8"
-            )
-        )
-
+        data = json.loads(MEMBERS_FILE.read_text(encoding="utf-8"))
         if isinstance(data, list):
             return data
-
     except Exception:
         pass
 
@@ -240,139 +222,72 @@ def load_members():
 
 
 def save_members(members):
-
-    temp_file = MEMBERS_FILE.with_suffix(
-        ".tmp"
-    )
-
+    temp_file = MEMBERS_FILE.with_suffix(".tmp")
     temp_file.write_text(
-        json.dumps(
-            members,
-            ensure_ascii=False,
-            indent=2,
-        ),
+        json.dumps(members, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-
-    temp_file.replace(
-        MEMBERS_FILE
-    )
+    temp_file.replace(MEMBERS_FILE)
 
 
 def ensure_admin():
-
     members = load_members()
-
-    admin = next(
-        (
-            m
-            for m in members
-            if m.get("username")
-            == ADMIN_USERNAME
-        ),
-        None,
-    )
+    admin = next((m for m in members if m.get("username") == ADMIN_USERNAME), None)
 
     if admin is None:
-
         members.append(
             {
                 "username": ADMIN_USERNAME,
-                "password_hash": hash_password(
-                    ADMIN_PASSWORD
-                ),
+                "password_hash": hash_password(ADMIN_PASSWORD),
                 "name": "系統管理員",
                 "email": "",
                 "role": "admin",
                 "status": "active",
                 "membership": "永久",
-                "created_at": datetime.now().isoformat(
-                    timespec="seconds"
-                ),
+                "created_at": datetime.now().isoformat(timespec="seconds"),
             }
         )
-
         save_members(members)
 
 
 def find_member(username):
-
     for member in load_members():
-
-        if (
-            member.get("username")
-            == username.strip()
-        ):
+        if member.get("username") == username.strip():
             return member
-
     return None
 
 
-def create_member(
-    username,
-    password,
-    name,
-    email,
-    role="member",
-):
-
+def create_member(username, password, name, email, role="member"):
     username = username.strip()
 
-    if not re.fullmatch(
-        r"[A-Za-z0-9_.-]{3,32}",
-        username,
-    ):
-        return (
-            False,
-            "帳號必須 3～32 字元，只能使用英文、數字、底線、點或連字號。",
-        )
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", username):
+        return (False, "帳號必須 3～32 字元，只能使用英文、數字、底線、點或連字號。")
 
     if len(password) < 6:
-
-        return (
-            False,
-            "密碼至少 6 個字元。",
-        )
+        return (False, "密碼至少 6 個字元。")
 
     if find_member(username):
+        return (False, "帳號已存在。")
 
-        return (
-            False,
-            "帳號已存在。",
-        )
-
-    if role not in (
-        "member",
-        "vip",
-        "admin",
-    ):
+    if role not in ("member", "vip", "admin"):
         role = "member"
 
     members = load_members()
-
     members.append(
         {
             "username": username,
-            "password_hash": hash_password(
-                password
-            ),
+            "password_hash": hash_password(password),
             "name": name.strip() or username,
             "email": email.strip(),
             "role": role,
             "status": "active",
             "membership": "永久",
-            "created_at": datetime.now().isoformat(
-                timespec="seconds"
-            ),
+            "created_at": datetime.now().isoformat(timespec="seconds"),
         }
     )
-
     save_members(members)
 
-    return (
-        True,
-        "會員建立成功，期限為永久。",
-    )
+    return (True, "會員建立成功，期限為永久。")
 
 
 # ============================================================
@@ -380,64 +295,28 @@ def create_member(
 # ============================================================
 
 def do_login(username, password):
-
     member = find_member(username)
 
     if member is None:
+        return (False, "帳號或密碼錯誤。")
 
-        return (
-            False,
-            "帳號或密碼錯誤。",
-        )
-
-    if not verify_password(
-        password,
-        member.get(
-            "password_hash",
-            "",
-        ),
-    ):
-
-        return (
-            False,
-            "帳號或密碼錯誤。",
-        )
+    if not verify_password(password, member.get("password_hash", "")):
+        return (False, "帳號或密碼錯誤。")
 
     if member.get("status") != "active":
-
-        return (
-            False,
-            "此會員目前已被停用。",
-        )
+        return (False, "此會員目前已被停用。")
 
     st.session_state.logged_in = True
-    st.session_state.username = (
-        member["username"]
-    )
-    st.session_state.name = (
-        member.get(
-            "name",
-            member["username"],
-        )
-    )
-    st.session_state.role = (
-        member.get(
-            "role",
-            "member",
-        )
-    )
+    st.session_state.username = member["username"]
+    st.session_state.name = member.get("name", member["username"])
+    st.session_state.role = member.get("role", "member")
     st.session_state.page = "home"
 
-    return (
-        True,
-        "登入成功。",
-    )
+    return (True, "登入成功。")
 
 
 def do_logout():
-
     for key, value in DEFAULT_STATE.items():
-
         st.session_state[key] = value
 
 
@@ -446,61 +325,32 @@ def do_logout():
 # ============================================================
 
 def get_gemini_client():
-
     try:
-
         from google import genai
-
     except ImportError:
-
-        raise RuntimeError(
-            "沒有安裝 google-genai，請先執行 pip install -r requirements.txt"
-        )
+        raise RuntimeError("沒有安裝 google-genai，請先執行 pip install google-genai")
 
     api_key = ""
-
     try:
-
-        api_key = st.secrets.get(
-            "GEMINI_API_KEY",
-            "",
-        )
-
+        api_key = st.secrets.get("GEMINI_API_KEY", "")
     except Exception:
         pass
 
     if not api_key:
-
-        api_key = os.getenv(
-            "GEMINI_API_KEY",
-            "",
-        )
+        api_key = os.getenv("GEMINI_API_KEY", "")
 
     if not api_key:
+        raise RuntimeError("找不到 GEMINI_API_KEY，請於 Secrets 或環境變數中設定。")
 
-        raise RuntimeError(
-            "找不到 GEMINI_API_KEY。"
-        )
-
-    return genai.Client(
-        api_key=api_key
-    )
+    return genai.Client(api_key=api_key)
 
 
-def ask_gemini(
-    prompt,
-    image_bytes=None,
-    mime_type="image/jpeg",
-):
-
+def ask_gemini(prompt, image_bytes=None, mime_type="image/jpeg"):
     client = get_gemini_client()
-
     contents = [prompt]
 
     if image_bytes:
-
         from google.genai import types
-
         contents.append(
             types.Part.from_bytes(
                 data=image_bytes,
@@ -508,24 +358,14 @@ def ask_gemini(
             )
         )
 
-    response = (
-        client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
-        )
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=contents,
     )
 
-    text = getattr(
-        response,
-        "text",
-        None,
-    )
-
+    text = getattr(response, "text", None)
     if not text:
-
-        raise RuntimeError(
-            "Gemini 沒有回傳結果。"
-        )
+        raise RuntimeError("Gemini 沒有回傳結果。")
 
     return text.strip()
 
@@ -535,87 +375,35 @@ def ask_gemini(
 # ============================================================
 
 def process_image(uploaded_file):
-
     raw = uploaded_file.getvalue()
-
     try:
+        image = Image.open(io.BytesIO(raw))
+        image = ImageOps.exif_transpose(image)
 
-        image = Image.open(
-            io.BytesIO(raw)
-        )
-
-        image = ImageOps.exif_transpose(
-            image
-        )
-
-        if image.mode not in (
-            "RGB",
-            "RGBA",
-        ):
-
-            image = image.convert(
-                "RGB"
-            )
+        if image.mode not in ("RGB", "RGBA"):
+            image = image.convert("RGB")
 
         max_size = 1600
-
         if max(image.size) > max_size:
-
-            ratio = (
-                max_size
-                / max(image.size)
-            )
-
+            ratio = max_size / max(image.size)
             image = image.resize(
                 (
-                    max(
-                        1,
-                        int(
-                            image.width
-                            * ratio
-                        ),
-                    ),
-                    max(
-                        1,
-                        int(
-                            image.height
-                            * ratio
-                        ),
-                    ),
+                    max(1, int(image.width * ratio)),
+                    max(1, int(image.height * ratio)),
                 ),
                 Image.Resampling.LANCZOS,
             )
 
         output = io.BytesIO()
-
         if image.mode == "RGBA":
+            image.save(output, format="PNG")
+            return (output.getvalue(), "image/png")
 
-            image.save(
-                output,
-                format="PNG",
-            )
-
-            return (
-                output.getvalue(),
-                "image/png",
-            )
-
-        image.save(
-            output,
-            format="JPEG",
-            quality=92,
-        )
-
-        return (
-            output.getvalue(),
-            "image/jpeg",
-        )
+        image.save(output, format="JPEG", quality=92)
+        return (output.getvalue(), "image/jpeg")
 
     except Exception as exc:
-
-        raise RuntimeError(
-            f"圖片處理失敗：{exc}"
-        )
+        raise RuntimeError(f"圖片處理失敗：{exc}")
 
 
 # ============================================================
@@ -623,7 +411,6 @@ def process_image(uploaded_file):
 # ============================================================
 
 def build_ai_prompt(product):
-
     return f"""
 你現在是「{APP_NAME}」的核心 AI。
 
@@ -826,7 +613,6 @@ CTA
 # ============================================================
 
 def login_page():
-
     st.markdown(
         f"""
         <div class="main-title">
@@ -839,109 +625,41 @@ def login_page():
         unsafe_allow_html=True,
     )
 
-    login_tab, register_tab = st.tabs(
-        [
-            "🔐 會員登入",
-            "📝 會員註冊",
-        ]
-    )
+    login_tab, register_tab = st.tabs(["🔐 會員登入", "📝 會員註冊"])
 
     with login_tab:
-
-        with st.form(
-            "login_form"
-        ):
-
-            username = st.text_input(
-                "會員帳號"
-            )
-
-            password = st.text_input(
-                "會員密碼",
-                type="password",
-            )
-
-            submit = st.form_submit_button(
-                "登入",
-                use_container_width=True,
-            )
+        with st.form("login_form"):
+            username = st.text_input("會員帳號")
+            password = st.text_input("會員密碼", type="password")
+            submit = st.form_submit_button("登入", use_container_width=True)
 
         if submit:
-
-            ok, msg = do_login(
-                username,
-                password,
-            )
-
+            ok, msg = do_login(username, password)
             if ok:
-
                 st.success(msg)
                 st.rerun()
-
             else:
-
                 st.error(msg)
 
-        st.info(
-            f"測試管理員：{ADMIN_USERNAME} / {ADMIN_PASSWORD}"
-        )
+        st.info(f"測試管理員：{ADMIN_USERNAME} / {ADMIN_PASSWORD}")
 
     with register_tab:
-
-        with st.form(
-            "register_form"
-        ):
-
-            username = st.text_input(
-                "新會員帳號"
-            )
-
-            name = st.text_input(
-                "姓名 / 暱稱"
-            )
-
-            email = st.text_input(
-                "Email"
-            )
-
-            password = st.text_input(
-                "密碼",
-                type="password",
-            )
-
-            password2 = st.text_input(
-                "再次輸入密碼",
-                type="password",
-            )
-
-            submit = st.form_submit_button(
-                "註冊永久會員",
-                use_container_width=True,
-            )
+        with st.form("register_form"):
+            username = st.text_input("新會員帳號")
+            name = st.text_input("姓名 / 暱稱")
+            email = st.text_input("Email")
+            password = st.text_input("密碼", type="password")
+            password2 = st.text_input("再次輸入密碼", type="password")
+            submit = st.form_submit_button("註冊永久會員", use_container_width=True)
 
         if submit:
-
             if password != password2:
-
-                st.error(
-                    "兩次密碼不一致。"
-                )
-
+                st.error("兩次密碼不一致。")
             else:
-
-                ok, msg = create_member(
-                    username,
-                    password,
-                    name,
-                    email,
-                )
-
+                ok, msg = create_member(username, password, name, email)
                 if ok:
-
                     st.success(msg)
-
                 else:
-
                     st.error(msg)
 
 
@@ -950,13 +668,8 @@ def login_page():
 # ============================================================
 
 def sidebar():
-
     with st.sidebar:
-
-        st.markdown(
-            f"## 🛒 {APP_NAME}"
-        )
-
+        st.markdown(f"## 🛒 {APP_NAME}")
         st.markdown(
             f"""
             <div class="member-box">
@@ -968,42 +681,89 @@ def sidebar():
             unsafe_allow_html=True,
         )
 
-        if st.button(
-            "🏠 AI 自動化",
-            use_container_width=True,
-        ):
-
-            st.session_state.page = (
-                "home"
-            )
-
+        if st.button("🏠 AI 自動化", use_container_width=True):
+            st.session_state.page = "home"
             st.rerun()
 
-        if (
-            st.session_state.role
-            == "admin"
-        ):
-
-            if st.button(
-                "👑 管理員中心",
-                use_container_width=True,
-            ):
-
-                st.session_state.page = (
-                    "admin"
-                )
-
+        if st.session_state.role == "admin":
+            if st.button("👑 管理員中心", use_container_width=True):
+                st.session_state.page = "admin"
                 st.rerun()
 
         st.divider()
 
-        if st.button(
-            "🚪 登出",
-            use_container_width=True,
-        ):
-
+        if st.button("🚪 登出", use_container_width=True):
             do_logout()
             st.rerun()
+
+
+# ============================================================
+# 主頁 (AI 半自動化操作頁面)
+# ============================================================
+
+def home_page():
+    st.title("🏠 AI 商品自動化生成")
+    st.caption("填寫基本商品資料並上傳圖片，AI 將自動生成上架文案、短影音腳本與即夢 Prompt。")
+
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        st.subheader("1. 填寫商品資料")
+        name = st.text_input("商品名稱", placeholder="例如：無塵兩用隨身涼風扇")
+        price = st.text_input("商品價格", placeholder="例如：$299")
+        cost = st.text_input("商品成本", placeholder="例如：$120")
+        commission = st.text_input("分潤比例", placeholder="例如：15%")
+        sales = st.text_input("月銷量", placeholder="例如：1200+")
+        rating = st.text_input("商品評分", placeholder="例如：4.9")
+        url = st.text_input("商品連結", placeholder="https://...")
+        specs = st.text_area("商品規格/細節", placeholder="顏色：白色/粉色\n電池容量：2000mAh")
+        platform = st.selectbox("目標平台", ["蝦皮購物", "TikTok 電商", "雙平台通用"])
+
+        uploaded_file = st.file_uploader("上傳商品圖片 (選填，強化辨識)", type=["jpg", "jpeg", "png", "webp"])
+
+    with col2:
+        st.subheader("2. AI 生成預覽")
+        if st.button("🚀 開始全自動分析生成", use_container_width=True, type="primary"):
+            if not name:
+                st.warning("請至少填寫商品名稱！")
+            else:
+                product_info = {
+                    "name": name,
+                    "price": price or "待確認",
+                    "cost": cost or "待確認",
+                    "commission": commission or "待確認",
+                    "sales": sales or "待確認",
+                    "rating": rating or "待確認",
+                    "url": url or "待確認",
+                    "specs": specs or "待確認",
+                    "platform": platform,
+                }
+
+                img_bytes = None
+                mime_type = "image/jpeg"
+
+                if uploaded_file:
+                    with st.spinner("正在優化與處理圖片..."):
+                        img_bytes, mime_type = process_image(uploaded_file)
+
+                with st.spinner("AI 正在思考並調用 Gemini 2.5 PRO 生成分析內容..."):
+                    try:
+                        prompt_text = build_ai_prompt(product_info)
+                        result = ask_gemini(prompt_text, img_bytes, mime_type)
+                        st.session_state.result = result
+                        st.success("生成完成！")
+                    except Exception as e:
+                        st.error(f"生成過程發生錯誤：{e}")
+
+        if st.session_state.result:
+            st.text_area("生成結果", st.session_state.result, height=600)
+            st.download_button(
+                label="📥 下載完整報告 (.txt)",
+                data=st.session_state.result,
+                file_name=f"{name}_AI生成企劃.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
 
 
 # ============================================================
@@ -1011,78 +771,31 @@ def sidebar():
 # ============================================================
 
 def admin_page():
-
-    st.title(
-        "👑 管理員中心"
-    )
-
-    st.caption(
-        "所有會員期限均為永久，由管理員手動控制會員狀態。"
-    )
+    st.title("👑 管理員中心")
+    st.caption("所有會員期限均為永久，由管理員手動控制會員狀態與權限。")
 
     members = load_members()
 
     c1, c2, c3 = st.columns(3)
-
-    c1.metric(
-        "會員總數",
-        len(members),
-    )
-
-    c2.metric(
-        "啟用會員",
-        sum(
-            m.get("status")
-            == "active"
-            for m in members
-        ),
-    )
-
-    c3.metric(
-        "永久會員",
-        len(members),
-    )
+    c1.metric("會員總數", len(members))
+    c2.metric("啟用會員", sum(m.get("status") == "active" for m in members))
+    c3.metric("永久會員", len(members))
 
     st.divider()
 
-    st.subheader(
-        "➕ 新增會員"
-    )
-
-    with st.form(
-        "admin_add"
-    ):
-
+    st.subheader("➕ 新增會員")
+    with st.form("admin_add"):
         a, b = st.columns(2)
-
         with a:
-
-            username = st.text_input(
-                "帳號"
-            )
-
-            name = st.text_input(
-                "姓名 / 暱稱"
-            )
-
+            username = st.text_input("帳號")
+            name = st.text_input("姓名 / 暱稱")
         with b:
-
-            password = st.text_input(
-                "密碼",
-                type="password",
-            )
-
-            email = st.text_input(
-                "Email"
-            )
+            password = st.text_input("密碼", type="password")
+            email = st.text_input("Email")
 
         role = st.selectbox(
             "會員等級",
-            [
-                "member",
-                "vip",
-                "admin",
-            ],
+            ["member", "vip", "admin"],
             format_func=lambda x: {
                 "member": "一般會員",
                 "vip": "VIP 會員",
@@ -1090,85 +803,63 @@ def admin_page():
             }[x],
         )
 
-        submit = st.form_submit_button(
-            "建立永久會員",
-            use_container_width=True,
-        )
+        submit = st.form_submit_button("建立永久會員", use_container_width=True)
 
     if submit:
-
-        ok, msg = create_member(
-            username,
-            password,
-            name,
-            email,
-            role,
-        )
-
+        ok, msg = create_member(username, password, name, email, role)
         if ok:
-
             st.success(msg)
             st.rerun()
-
         else:
-
             st.error(msg)
 
     st.divider()
 
-    st.subheader(
-        "👥 會員管理"
-    )
+    st.subheader("👥 會員管理")
 
-    for member in members:
-
-        username = member.get(
-            "username",
-            "",
-        )
+    for idx, member in enumerate(members):
+        username = member.get("username", "")
 
         with st.expander(
-            f"👤 {username}｜{member.get('role', 'member')}｜{member.get('status', 'active')}"
+            f"👤 {username} ｜ {member.get('role', 'member')} ｜ 狀態: {member.get('status', 'active')}"
         ):
-
             c1, c2, c3 = st.columns(3)
 
             with c1:
-
-                st.write(
-                    f"姓名：{member.get('name', '')}"
-                )
-
-                st.write(
-                    f"Email：{member.get('email', '')}"
-                )
-
-                st.write(
-                    "期限：**永久**"
-                )
-
-                st.write(
-                    f"建立時間：{member.get('created_at', '')}"
-                )
+                st.write(f"姓名：{member.get('name', '')}")
+                st.write(f"Email：{member.get('email', '')}")
+                st.write("期限：**永久**")
+                st.write(f"建立時間：{member.get('created_at', '')}")
 
             with c2:
-
-                roles = [
-                    "member",
-                    "vip",
-                    "admin",
-                ]
-
-                current_role = member.get(
-                    "role",
-                    "member",
+                roles = ["member", "vip", "admin"]
+                current_role = member.get("role", "member")
+                new_role = st.selectbox(
+                    "權限等級",
+                    roles,
+                    index=roles.index(current_role) if current_role in roles else 0,
+                    key=f"role_{username}_{idx}",
                 )
 
-                role = st.selectbox(
-                    "等級",
-                    roles,
-                    index=(
-                        roles.index(
-                            current_role
-                        )
-   
+                statuses = ["active", "disabled"]
+                current_status = member.get("status", "active")
+                new_status = st.selectbox(
+                    "帳號狀態",
+                    statuses,
+                    index=statuses.index(current_status) if current_status in statuses else 0,
+                    key=f"status_{username}_{idx}",
+                )
+
+            with c3:
+                st.write("操作")
+                if st.button("💾 儲存修改", key=f"save_{username}_{idx}"):
+                    member["role"] = new_role
+                    member["status"] = new_status
+                    save_members(members)
+                    st.success(f"已更新 {username} 的設定！")
+                    st.rerun()
+
+
+# ============================================================
+# 主程式入口
+# ============================================
