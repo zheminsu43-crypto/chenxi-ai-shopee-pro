@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import io
 import os
 import json
@@ -10,8 +9,6 @@ from datetime import datetime
 import streamlit as st
 from PIL import Image, ImageOps
 
-# new dependency for file locking
-from filelock import FileLock
 
 # ============================================================
 # 基本設定
@@ -26,10 +23,10 @@ MEMBERS_FILE = DATA_DIR / "members.json"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# 預設管理員帳號（不再放明文密碼）
+# 預設管理員
 ADMIN_USERNAME = "admin"
-# 若要自動建立 admin，請在環境或 Streamlit secrets 中設定 DEFAULT_ADMIN_PASSWORD
-# DEFAULT_ADMIN_PASSWORD = None
+DEFAULT_ADMIN_PASSWORD = "admin123456"
+
 
 # ============================================================
 # Streamlit 頁面
@@ -89,11 +86,8 @@ DEFAULT_SESSION = {
     "role": "",
     "page": "home",
     "result": "",
-    # admin status flags for UI
-    "admin_missing": False,
-    "admin_auto_created": False,
-    "admin_temp_password": "",
 }
+
 
 for key, value in DEFAULT_SESSION.items():
     if key not in st.session_state:
@@ -163,28 +157,18 @@ def load_members():
 
 
 def save_members(members):
-    """
-    Save members to MEMBERS_FILE atomically with a file lock and set restrictive permissions.
-    """
-    lock_path = str(MEMBERS_FILE.with_suffix(".lock"))
-    lock = FileLock(lock_path, timeout=5)
-
     temp_file = MEMBERS_FILE.with_suffix(".tmp")
-    try:
-        with lock:
-            temp_file.write_text(
-                json.dumps(members, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            temp_file.replace(MEMBERS_FILE)
-            try:
-                MEMBERS_FILE.chmod(0o600)
-            except Exception:
-                # If chmod fails (e.g., on some Windows or hosted envs), we ignore but continue.
-                pass
-    except Exception as exc:
-        # If locking or write fails, raise to let caller handle it.
-        raise
+
+    temp_file.write_text(
+        json.dumps(
+            members,
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    temp_file.replace(MEMBERS_FILE)
 
 
 def find_member(username):
@@ -198,7 +182,7 @@ def find_member(username):
 
 
 # ============================================================
-# 建立預設管理員（安全型：只在 env/secrets 提供密碼時自動建立）
+# 建立預設管理員
 # ============================================================
 
 def ensure_admin():
@@ -211,52 +195,26 @@ def ensure_admin():
             admin = member
             break
 
-    if admin is not None:
-        # Ensure false flags are reset
-        st.session_state.admin_missing = False
-        st.session_state.admin_auto_created = False
-        st.session_state.admin_temp_password = ""
-        return
+    if admin is None:
 
-    # No admin found. Check for DEFAULT_ADMIN_PASSWORD in st.secrets or env.
-    admin_pw = None
-    try:
-        admin_pw = st.secrets.get("DEFAULT_ADMIN_PASSWORD", None)
-    except Exception:
-        admin_pw = None
-
-    if not admin_pw:
-        admin_pw = os.getenv("DEFAULT_ADMIN_PASSWORD", None)
-
-    if admin_pw:
-        # Create admin using provided secret (caller must securely manage this secret)
         members.append(
             {
                 "username": ADMIN_USERNAME,
-                "password_hash": hash_password(admin_pw),
+                "password_hash": hash_password(
+                    DEFAULT_ADMIN_PASSWORD
+                ),
                 "name": "系統管理員",
                 "email": "",
                 "role": "admin",
                 "status": "active",
                 "membership": "永久",
-                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "created_at": datetime.now().isoformat(
+                    timespec="seconds"
+                ),
             }
         )
-        try:
-            save_members(members)
-            st.session_state.admin_auto_created = True
-            st.session_state.admin_temp_password = admin_pw
-            st.session_state.admin_missing = False
-        except Exception:
-            # If saving failed, mark missing so UI informs operator
-            st.session_state.admin_missing = True
-            st.session_state.admin_auto_created = False
-            st.session_state.admin_temp_password = ""
-    else:
-        # Do not auto-create admin; require operator to create via secure means
-        st.session_state.admin_missing = True
-        st.session_state.admin_auto_created = False
-        st.session_state.admin_temp_password = ""
+
+        save_members(members)
 
 
 # ============================================================
@@ -309,10 +267,7 @@ def create_member(
             "email": email.strip(),
             "role": role,
             "status": "active",
-
-            # 永久會員
             "membership": "永久",
-
             "created_at": datetime.now().isoformat(
                 timespec="seconds"
             ),
@@ -325,7 +280,7 @@ def create_member(
 
 
 # ============================================================
-# 登入
+# 登入 / 登出
 # ============================================================
 
 def login_user(username, password):
@@ -361,62 +316,431 @@ def login_user(username, password):
     return True, "登入成功。"
 
 
-# ============================================================
-# 登出
-# ============================================================
-
 def logout_user():
     for key, value in DEFAULT_SESSION.items():
         st.session_state[key] = value
 
 
 # ============================================================
-# Gemini API Key
+# Gemini API Key & Client
 # ============================================================
 
 def get_gemini_api_key():
-
-    # Streamlit Cloud Secrets
     try:
         key = st.secrets.get(
             "GEMINI_API_KEY",
             "",
         )
-
         if key:
             return key
-
     except Exception:
         pass
 
-    # 本機環境變數
     key = os.getenv(
         "GEMINI_API_KEY",
         "",
     )
-
     return key
 
 
-# ============================================================
-# Gemini Client
-# ============================================================
-
 def get_gemini_client():
-
     try:
         from google import genai
-
     except ImportError as exc:
         raise RuntimeError(
-            "找不到 google-genai。請確認 requirements.txt 已經安裝。"
+            "找不到 google-genai。"
+            "請確認 requirements.txt 已經安裝。"
         ) from exc
 
     api_key = get_gemini_api_key()
 
     if not api_key:
         raise RuntimeError(
-            "找不到 GEMINI_API_KEY。請到 Streamlit Cloud → App Settings → Secrets 設定。"
+            "找不到 GEMINI_API_KEY。"
+            "請到 Streamlit Cloud → App Settings → Secrets 設定。"
+        )
+
+    return genai.Client(api_key=api_key)
+
+
+# ============================================================
+# Gemini 分析與圖片處理
+# ============================================================
+
+def ask_gemini(
+    prompt,
+    image_bytes=None,
+    mime_type="image/jpeg",
+):
+    client = get_gemini_client()
+
+    if image_bytes:
+        from google.genai import types
+
+        contents = [
+            types.Part.from_bytes(
+                data=image_bytes,
+                mime_type=mime_type,
+            ),
+            prompt,
+        ]
+    else:
+        contents = prompt
+
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=contents,
+    )
+
+    text = getattr(response, "text", None)
+
+    if not text:
+        raise RuntimeError("Gemini 沒有回傳內容。")
+
+    return text.strip()
+
+
+def prepare_image(uploaded_file):
+    raw_data = uploaded_file.getvalue()
+
+    try:
+        image = Image.open(io.BytesIO(raw_data))
+        image = ImageOps.exif_transpose(image)
+
+        if image.mode not in ["RGB", "RGBA"]:
+            image = image.convert("RGB")
+
+        max_size = 1600
+        if max(image.size) > max_size:
+            ratio = max_size / max(image.size)
+            new_width = max(1, int(image.width * ratio))
+            new_height = max(1, int(image.height * ratio))
+            image = image.resize(
+                (new_width, new_height),
+                Image.Resampling.LANCZOS,
+            )
+
+        output = io.BytesIO()
+        if image.mode == "RGBA":
+            image.save(output, format="PNG", optimize=True)
+            return output.getvalue(), "image/png"
+
+        image.save(output, format="JPEG", quality=92, optimize=True)
+        return output.getvalue(), "image/jpeg"
+
+    except Exception as exc:
+        raise RuntimeError(f"圖片處理失敗：{exc}") from exc
+
+
+# ============================================================
+# 即夢 AI 2.5 核心規則 & 完整指令
+# ============================================================
+
+JIMENG_25_RULES = """
+【即夢 AI 2.5 商品原貌鎖定】
+1. 使用上傳圖片中的主要商品作為唯一主要商品。
+2. 保留商品品牌、包裝、瓶身、盒子與外觀、形狀比例、顏色、材質、Logo、標籤與文字。
+3. 不得自行修改品牌、包裝、顏色、形狀，不得捏造不存在的商品資料。
+4. 不確定資訊必須標示「待確認」。
+
+【一致性】
+5. 整個畫面只能有一個主要商品，不得商品變形、融化、扭曲、漂浮、閃爍或消失。
+
+【人物與商業限制】
+6. 不要人物、手、手臂、模特兒，不使用人體拿商品。
+7. 不要浮水印、錯誤價格、假贈品、額外商品。商品必須是視覺焦點，適合蝦皮與 TikTok。
+
+【即夢 AI 2.5 生圖與影片】
+8. Prompt 主體使用英文，商業畫面文字使用繁體中文，比例 9:16。
+9. 影片包含 Opening, Middle, Camera Motion, Lighting, Focus, Detail, Consistency, Ending Freeze 及 Negative Prompt。
+"""
+
+
+def build_master_prompt(product):
+    return f"""
+你現在是「{APP_NAME}」的核心電商 AI。
+請分析使用者提供的商品圖片與商品資料。
+
+==============================
+【商品資料】
+==============================
+商品名稱：{product["name"]}
+商品價格：{product["price"]}
+商品成本：{product["cost"]}
+分潤比例：{product["commission"]}
+月銷量：{product["sales"]}
+商品評分：{product["rating"]}
+商品連結：{product["url"]}
+商品規格：{product["specs"]}
+目標平台：{product["platform"]}
+
+==============================
+【重要資料規則】
+==============================
+只能根據圖片與使用者提供的資料，不能自行捏造。不知道的資訊請寫「待確認」。
+
+==============================
+【輸出任務】
+==============================
+【第一部分：商品辨識】
+【第二部分：AI 選品分析】
+【第三部分：蝦皮上架文案】
+【第四部分：TikTok 文案】
+【第五部分：即夢 AI 2.5 生圖 Prompt】(包含英文 Prompt、Negative Prompt、繁中文字、9:16 構圖)
+【第六部分：即夢 AI 2.5 影片 Prompt】
+【第七部分：即夢 AI 2.5 爆款帶貨影片腳本】(0-3s, 3-8s, 8-15s, 15-20s, 20-25s)
+【第八部分：分潤合規檢查】
+【第九部分：最終 AI 檢查】
+
+請遵循即夢 2.5 規範：
+{JIMENG_25_RULES}
+"""
+
+
+# ============================================================
+# 頁面元件：登入頁
+# ============================================================
+
+def render_login_page():
+    st.markdown(
+        f"""
+        <div class="main-title">🛒 {APP_NAME}</div>
+        <div class="sub-title">永久會員｜管理員｜Gemini 2.5 Flash｜即夢 AI 2.5</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    login_tab, register_tab = st.tabs(["🔐 會員登入", "📝 會員註冊"])
+
+    with login_tab:
+        with st.form("login_form"):
+            username = st.text_input("會員帳號")
+            password = st.text_input("會員密碼", type="password")
+            submitted = st.form_submit_button("登入", use_container_width=True)
+
+        if submitted:
+            ok, message = login_user(username, password)
+            if ok:
+                st.success(message)
+                st.rerun()
+            else:
+                st.error(message)
+
+        st.info("預設管理員帳號：admin / 密碼：admin123456")
+
+    with register_tab:
+        with st.form("register_form"):
+            username = st.text_input("新會員帳號")
+            name = st.text_input("姓名 / 暱稱")
+            email = st.text_input("Email")
+            password = st.text_input("密碼", type="password")
+            password2 = st.text_input("再次輸入密碼", type="password")
+            submitted = st.form_submit_button("註冊永久會員", use_container_width=True)
+
+        if submitted:
+            if password != password2:
+                st.error("兩次密碼不一致。")
+            else:
+                ok, message = create_member(username, password, name, email, "member")
+                if ok:
+                    st.success(message)
+                else:
+                    st.error(message)
+
+
+# ============================================================
+# 頁面元件：Sidebar
+# ============================================================
+
+def render_sidebar():
+    with st.sidebar:
+        st.markdown(f"## 🛒 {APP_NAME}")
+        st.markdown(
+            f"""
+            <div class="member-card">
+            👤 <b>{st.session_state.name}</b><br>
+            帳號：{st.session_state.username}<br>
+            權限：{st.session_state.role}<br>
+            會員期限：<b>永久</b>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if st.button("🏠 AI 自動化", use_container_width=True):
+            st.session_state.page = "home"
+            st.rerun()
+
+        if st.session_state.role == "admin":
+            if st.button("👑 管理員中心", use_container_width=True):
+                st.session_state.page = "admin"
+                st.rerun()
+
+        st.divider()
+
+        if st.button("🚪 登出", use_container_width=True):
+            logout_user()
+            st.rerun()
+
+
+# ============================================================
+# 頁面元件：管理員中心
+# ============================================================
+
+def render_admin_page():
+    st.title("👑 管理員中心")
+    st.caption("永久會員制：沒有到期日期，管理員可以手動啟用或停用。")
+
+    members = load_members()
+    total_members = len(members)
+    active_members = sum(1 for m in members if m.get("status") == "active")
+    admin_count = sum(1 for m in members if m.get("role") == "admin")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("會員總數", total_members)
+    col2.metric("啟用會員", active_members)
+    col3.metric("管理員", admin_count)
+
+    st.divider()
+
+    st.subheader("➕ 建立永久會員")
+    with st.form("admin_create_member"):
+        col1, col2 = st.columns(2)
+        with col1:
+            username = st.text_input("會員帳號")
+            name = st.text_input("姓名 / 暱稱")
+        with col2:
+            password = st.text_input("會員密碼", type="password")
+            email = st.text_input("Email")
+
+        role = st.selectbox(
+            "會員等級",
+            ["member", "vip", "admin"],
+            format_func=lambda v: {"member": "一般會員", "vip": "VIP 會員", "admin": "管理員"}[v],
+        )
+
+        submitted = st.form_submit_button("建立永久會員", use_container_width=True)
+
+    if submitted:
+        ok, message = create_member(username, password, name, email, role)
+        if ok:
+            st.success(message)
+            st.rerun()
+        else:
+            st.error(message)
+
+    st.divider()
+
+    st.subheader("👥 會員管理")
+    members = load_members()
+
+    if not members:
+        st.info("目前沒有會員資料。")
+    else:
+        for idx, m in enumerate(members):
+            with st.expander(f"👤 {m.get('username')} ({m.get('name')}) - {m.get('role').upper()}"):
+                st.write(f"**Email:** {m.get('email', '無')}")
+                st.write(f"**狀態:** {m.get('status')}")
+                st.write(f"**建立時間:** {m.get('created_at')}")
+
+                if m.get("username") != ADMIN_USERNAME:
+                    btn_label = "停用帳號" if m.get("status") == "active" else "啟用帳號"
+                    if st.button(btn_label, key=f"toggle_{idx}"):
+                        m["status"] = "disabled" if m.get("status") == "active" else "active"
+                        save_members(members)
+                        st.success(f"已更新 {m.get('username')} 的狀態")
+                        st.rerun()
+
+
+# ============================================================
+# 頁面元件：AI 自動化主頁
+# ============================================================
+
+def render_home_page():
+    st.title(f"🛒 {APP_NAME}")
+    st.caption("自動化產生蝦皮文案、TikTok 腳本及即夢 AI 2.5 提示詞")
+
+    col_left, col_right = st.columns([1, 1])
+
+    with col_left:
+        st.subheader("1. 上傳商品圖片")
+        uploaded_file = st.file_uploader("選擇圖片 (JPG/PNG)", type=["jpg", "jpeg", "png"])
+
+        if uploaded_file:
+            st.image(uploaded_file, caption="預覽商品圖片", use_container_width=True)
+
+        st.subheader("2. 填寫商品資料")
+        product_name = st.text_input("商品名稱", placeholder="例如：極致保濕修護精華液")
+        product_price = st.text_input("商品售價", placeholder="例如：499")
+        product_cost = st.text_input("商品成本", placeholder="例如：150")
+        product_commission = st.text_input("分潤比例 (%)", placeholder="例如：15")
+        product_sales = st.text_input("預估月銷量", placeholder="例如：1000")
+        product_rating = st.text_input("商品評分", placeholder="例如：4.9")
+        product_url = st.text_input("商品連結", placeholder="例如：https://shopee.tw/...")
+        product_specs = st.text_area("商品規格/細節描述", placeholder="例如：容量 30ml，保存期限 3 年...")
+        platform = st.selectbox("主要目標平台", ["蝦皮購物 + TikTok", "僅蝦皮購物", "僅 TikTok"])
+
+        generate_btn = st.button("🚀 開始 AI 文案與提示詞生成", type="primary", use_container_width=True)
+
+    with col_right:
+        st.subheader("3. AI 分析與生成結果")
+
+        if generate_btn:
+            if not uploaded_file:
+                st.warning("請先上傳商品圖片。")
+            elif not product_name.strip():
+                st.warning("請輸入商品名稱。")
+            else:
+                with st.spinner("AI 正在分析圖片與撰寫文案中..."):
+                    try:
+                        img_bytes, mime_type = prepare_image(uploaded_file)
+                        product_data = {
+                            "name": product_name,
+                            "price": product_price,
+                            "cost": product_cost,
+                            "commission": product_commission,
+                            "sales": product_sales,
+                            "rating": product_rating,
+                            "url": product_url,
+                            "specs": product_specs,
+                            "platform": platform,
+                        }
+                        prompt = build_master_prompt(product_data)
+                        result = ask_gemini(prompt, img_bytes, mime_type)
+                        st.session_state.result = result
+                    except Exception as e:
+                        st.error(f"生成失敗：{e}")
+
+        if st.session_state.result:
+            st.markdown(st.session_state.result)
+            st.download_button(
+                label="📥 下載完整報告 (.txt)",
+                data=st.session_state.result,
+                file_name=f"{product_name}_AI分析報告.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+
+
+# ============================================================
+# 主程式入口 (Main)
+# ============================================================
+
+def main():
+    ensure_admin()
+
+    if not st.session_state.logged_in:
+        render_login_page()
+    else:
+        render_sidebar()
+        if st.session_state.page == "admin" and st.session_state.role == "admin":
+            render_admin_page()
+        else:
+            render_home_page()
+
+
+if __name__ == "__main__":
+    main()         "找不到 GEMINI_API_KEY。請到 Streamlit Cloud → App Settings → Secrets 設定。"
         )
 
     return genai.Client(
