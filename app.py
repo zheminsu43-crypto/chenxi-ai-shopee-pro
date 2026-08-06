@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import io
 import os
 import json
@@ -9,6 +10,8 @@ from datetime import datetime
 import streamlit as st
 from PIL import Image, ImageOps
 
+# new dependency for file locking
+from filelock import FileLock
 
 # ============================================================
 # 基本設定
@@ -23,10 +26,10 @@ MEMBERS_FILE = DATA_DIR / "members.json"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# 預設管理員
+# 預設管理員帳號（不再放明文密碼）
 ADMIN_USERNAME = "admin"
-DEFAULT_ADMIN_PASSWORD = "admin123456"
-
+# 若要自動建立 admin，請在環境或 Streamlit secrets 中設定 DEFAULT_ADMIN_PASSWORD
+# DEFAULT_ADMIN_PASSWORD = None
 
 # ============================================================
 # Streamlit 頁面
@@ -86,8 +89,11 @@ DEFAULT_SESSION = {
     "role": "",
     "page": "home",
     "result": "",
+    # admin status flags for UI
+    "admin_missing": False,
+    "admin_auto_created": False,
+    "admin_temp_password": "",
 }
-
 
 for key, value in DEFAULT_SESSION.items():
     if key not in st.session_state:
@@ -157,18 +163,28 @@ def load_members():
 
 
 def save_members(members):
+    """
+    Save members to MEMBERS_FILE atomically with a file lock and set restrictive permissions.
+    """
+    lock_path = str(MEMBERS_FILE.with_suffix(".lock"))
+    lock = FileLock(lock_path, timeout=5)
+
     temp_file = MEMBERS_FILE.with_suffix(".tmp")
-
-    temp_file.write_text(
-        json.dumps(
-            members,
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-    temp_file.replace(MEMBERS_FILE)
+    try:
+        with lock:
+            temp_file.write_text(
+                json.dumps(members, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temp_file.replace(MEMBERS_FILE)
+            try:
+                MEMBERS_FILE.chmod(0o600)
+            except Exception:
+                # If chmod fails (e.g., on some Windows or hosted envs), we ignore but continue.
+                pass
+    except Exception as exc:
+        # If locking or write fails, raise to let caller handle it.
+        raise
 
 
 def find_member(username):
@@ -182,7 +198,7 @@ def find_member(username):
 
 
 # ============================================================
-# 建立預設管理員
+# 建立預設管理員（安全型：只在 env/secrets 提供密碼時自動建立）
 # ============================================================
 
 def ensure_admin():
@@ -195,26 +211,52 @@ def ensure_admin():
             admin = member
             break
 
-    if admin is None:
+    if admin is not None:
+        # Ensure false flags are reset
+        st.session_state.admin_missing = False
+        st.session_state.admin_auto_created = False
+        st.session_state.admin_temp_password = ""
+        return
 
+    # No admin found. Check for DEFAULT_ADMIN_PASSWORD in st.secrets or env.
+    admin_pw = None
+    try:
+        admin_pw = st.secrets.get("DEFAULT_ADMIN_PASSWORD", None)
+    except Exception:
+        admin_pw = None
+
+    if not admin_pw:
+        admin_pw = os.getenv("DEFAULT_ADMIN_PASSWORD", None)
+
+    if admin_pw:
+        # Create admin using provided secret (caller must securely manage this secret)
         members.append(
             {
                 "username": ADMIN_USERNAME,
-                "password_hash": hash_password(
-                    DEFAULT_ADMIN_PASSWORD
-                ),
+                "password_hash": hash_password(admin_pw),
                 "name": "系統管理員",
                 "email": "",
                 "role": "admin",
                 "status": "active",
                 "membership": "永久",
-                "created_at": datetime.now().isoformat(
-                    timespec="seconds"
-                ),
+                "created_at": datetime.now().isoformat(timespec="seconds"),
             }
         )
-
-        save_members(members)
+        try:
+            save_members(members)
+            st.session_state.admin_auto_created = True
+            st.session_state.admin_temp_password = admin_pw
+            st.session_state.admin_missing = False
+        except Exception:
+            # If saving failed, mark missing so UI informs operator
+            st.session_state.admin_missing = True
+            st.session_state.admin_auto_created = False
+            st.session_state.admin_temp_password = ""
+    else:
+        # Do not auto-create admin; require operator to create via secure means
+        st.session_state.admin_missing = True
+        st.session_state.admin_auto_created = False
+        st.session_state.admin_temp_password = ""
 
 
 # ============================================================
@@ -367,16 +409,14 @@ def get_gemini_client():
 
     except ImportError as exc:
         raise RuntimeError(
-            "找不到 google-genai。"
-            "請確認 requirements.txt 已經安裝。"
+            "找不到 google-genai。請確認 requirements.txt 已經安裝。"
         ) from exc
 
     api_key = get_gemini_api_key()
 
     if not api_key:
         raise RuntimeError(
-            "找不到 GEMINI_API_KEY。"
-            "請到 Streamlit Cloud → App Settings → Secrets 設定。"
+            "找不到 GEMINI_API_KEY。請到 Streamlit Cloud → App Settings → Secrets 設定。"
         )
 
     return genai.Client(
@@ -481,6 +521,45 @@ def prepare_image(uploaded_file):
         output = io.BytesIO()
 
         if image.mode == "RGBA":
+
+            image.save(
+                output,
+                format="PNG",
+                optimize=True,
+            )
+
+            return (
+                output.getvalue(),
+                "image/png",
+            )
+
+        image.save(
+            output,
+            format="JPEG",
+            quality=92,
+            optimize=True,
+        )
+
+        return (
+            output.getvalue(),
+            "image/jpeg",
+        )
+
+    except Exception as exc:
+
+        raise RuntimeError(
+            f"圖片處理失敗：{exc}"
+        ) from exc
+
+
+# ============================================================
+# 即夢 AI 2.5 核心規則
+# ============================================================
+
+JIMENG_25_RULES = """
+【即夢 AI 2.5 商品原貌鎖定】
+
+1.ode == "RGBA":
 
             image.save(
                 output,
