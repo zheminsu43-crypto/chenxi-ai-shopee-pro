@@ -2,7 +2,6 @@ import os
 import io
 import re
 import json
-import uuid
 import shutil
 import hashlib
 import secrets
@@ -14,9 +13,15 @@ from datetime import datetime, date, timedelta
 import streamlit as st
 from PIL import Image, ImageOps
 
-# =========================================================
-# AI 蝦皮全自動化 2.5 PRO
-# =========================================================
+try:
+    from google import genai
+    from google.genai import types
+    HAS_GENAI = True
+except Exception:
+    genai = None
+    types = None
+    HAS_GENAI = False
+
 APP_NAME = "AI 蝦皮全自動化 2.5 PRO"
 
 DATA_DIR = Path("data")
@@ -34,7 +39,6 @@ MAX_VIDEO_MB = 300
 
 ADMIN_USERNAME = "admin"
 DEFAULT_MEMBER_DAYS = 30
-
 GEMINI_MODEL = "gemini-2.5-flash"
 
 VIDEO_MIME_MAP = {
@@ -43,9 +47,6 @@ VIDEO_MIME_MAP = {
     ".webm": "video/webm",
 }
 
-# =========================================================
-# Streamlit 設定
-# =========================================================
 st.set_page_config(
     page_title=APP_NAME,
     page_icon="🛒",
@@ -53,43 +54,18 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# =========================================================
-# CSS
-# =========================================================
 st.markdown(
     """
 <style>
-.main-title {
-    font-size: 36px;
-    font-weight: 800;
-}
-.sub-title {
-    color: #777;
-    margin-bottom: 20px;
-}
-.card {
-    padding: 20px;
-    border-radius: 16px;
-    border: 1px solid rgba(128,128,128,.25);
-    margin-bottom: 15px;
-}
-.small {
-    color: #777;
-    font-size: 14px;
-}
-.success-box {
-    padding: 15px;
-    border-radius: 12px;
-    border: 1px solid #35a66f;
-}
+.main-title{font-size:36px;font-weight:800}
+.sub-title{color:#777;margin-bottom:20px}
+.card{padding:20px;border-radius:16px;border:1px solid rgba(128,128,128,.25);margin-bottom:15px}
+.small{color:#777;font-size:14px}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
-# =========================================================
-# Session State
-# =========================================================
 DEFAULT_STATE = {
     "logged_in": False,
     "username": "",
@@ -99,6 +75,7 @@ DEFAULT_STATE = {
     "last_product": {},
     "last_image_bytes": None,
     "last_image_name": "",
+    "last_image_mime": "image/jpeg",
     "last_video_bytes": None,
     "last_video_name": "",
     "last_video_mime": "video/mp4",
@@ -115,9 +92,6 @@ for key, value in DEFAULT_STATE.items():
         st.session_state[key] = value
 
 
-# =========================================================
-# Secrets / API
-# =========================================================
 def get_secret(name):
     try:
         value = st.secrets.get(name, "")
@@ -125,7 +99,6 @@ def get_secret(name):
             return str(value)
     except Exception:
         pass
-
     return os.environ.get(name, "")
 
 
@@ -133,9 +106,6 @@ GEMINI_KEY = get_secret("GEMINI_KEY") or get_secret("GEMINI_API_KEY")
 PEXELS_KEY = get_secret("PEXELS_KEY")
 
 
-# =========================================================
-# 基礎工具
-# =========================================================
 def now_text():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -166,33 +136,23 @@ def load_json(path, default):
 
 def save_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(".tmp")
-
+    temp = path.with_suffix(path.suffix + ".tmp")
     with open(temp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-
     temp.replace(path)
 
 
 def load_members():
     members = load_json(MEMBERS_FILE, {})
-
-    if not isinstance(members, dict):
-        members = {}
-
-    return members
+    return members if isinstance(members, dict) else {}
 
 
 def save_members(members):
     save_json(MEMBERS_FILE, members)
 
 
-# =========================================================
-# 初始化 Admin
-# =========================================================
 def ensure_admin():
     members = load_members()
-
     if ADMIN_USERNAME not in members:
         members[ADMIN_USERNAME] = {
             "username": ADMIN_USERNAME,
@@ -203,57 +163,35 @@ def ensure_admin():
             "role": "admin",
             "status": "active",
         }
-
         save_members(members)
 
 
-ensure_admin()
-
-
-# =========================================================
-# 會員
-# =========================================================
-def member_expiration(member):
+def member_status(member):
     if member.get("permanent"):
-        return "永久會員", True
-
+        return "永久會員", True, None
     expire = member.get("expire_date")
-
     if not expire:
-        return "未設定", False
-
+        return "未設定", False, None
     try:
-        expire_date = date.fromisoformat(expire)
+        d = date.fromisoformat(expire)
     except Exception:
-        return "日期錯誤", False
-
-    days = (expire_date - today()).days
-
+        return "日期錯誤", False, None
+    days = (d - today()).days
     if days < 0:
-        return f"已到期 ({abs(days)} 天)", False
-
+        return f"已到期（{abs(days)} 天）", False, days
     if days <= 7:
-        return f"即將到期（剩 {days} 天）", True
-
-    return f"正常（剩 {days} 天）", True
+        return f"即將到期（剩 {days} 天）", True, days
+    return f"正常（剩 {days} 天）", True, days
 
 
 def create_member(username, password, days=30, permanent=False, role="member"):
     username = username.strip()
-
     if not username or not password:
         return False, "帳號與密碼不能為空。"
-
     members = load_members()
-
     if username in members:
         return False, "帳號已存在。"
-
-    expire_date = None
-
-    if not permanent:
-        expire_date = (today() + timedelta(days=int(days))).isoformat()
-
+    expire_date = None if permanent else (today() + timedelta(days=int(days))).isoformat()
     members[username] = {
         "username": username,
         "password_hash": hash_password(password),
@@ -263,105 +201,67 @@ def create_member(username, password, days=30, permanent=False, role="member"):
         "role": role,
         "status": "active",
     }
-
     save_members(members)
-
     return True, "會員建立成功。"
 
 
 def authenticate(username, password):
     members = load_members()
-
-    member = members.get(username)
-
+    member = members.get(username.strip())
     if not member:
         return None, "帳號不存在。"
-
     if member.get("status") != "active":
         return None, "此帳號目前已停用。"
-
     if member.get("password_hash") != hash_password(password):
         return None, "密碼錯誤。"
-
-    status, valid = member_expiration(member)
-
+    status, valid, _ = member_status(member)
     if not valid:
-        return None, f"會員已無法使用：{status}"
-
+        return None, f"會員無法使用：{status}"
     return member, ""
 
 
-# =========================================================
-# Gemini
-# =========================================================
 def get_gemini_client():
     if not GEMINI_KEY:
         return None
-
+    if not HAS_GENAI:
+        raise RuntimeError("尚未安裝 google-genai。請確認 requirements.txt。")
     try:
-        from google import genai
-
         return genai.Client(api_key=GEMINI_KEY)
     except Exception as e:
-        st.session_state.gemini_error = str(e)
-        return None
+        raise RuntimeError(f"Gemini Client 建立失敗：{e}")
 
 
 def clean_json_text(text):
-    if not text:
-        return ""
-
-    text = text.strip()
-
-    text = re.sub(r"^```json", "", text, flags=re.I)
-    text = re.sub(r"^```", "", text)
-    text = re.sub(r"```$", "", text)
-
+    text = (text or "").strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+    text = re.sub(r"\s*```$", "", text)
     return text.strip()
 
 
 def gemini_text(prompt, image_bytes=None, mime_type="image/jpeg"):
     client = get_gemini_client()
-
     if not client:
-        raise RuntimeError(
-            "找不到 Gemini API Key。請在 Streamlit Secrets 設定 GEMINI_KEY。"
-        )
+        raise RuntimeError("找不到 Gemini API Key。請在 Streamlit Secrets 設定 GEMINI_KEY。")
+
+    contents = []
+    if image_bytes:
+        contents.append(types.Part.from_bytes(data=image_bytes, mime_type=mime_type))
+    contents.append(prompt)
 
     try:
-        contents = []
-
-        if image_bytes:
-            from google.genai import types
-
-            contents.append(
-                types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type=mime_type,
-                )
-            )
-
-        contents.append(prompt)
-
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=contents,
         )
-
         text = getattr(response, "text", None)
-
         if not text:
             raise RuntimeError("Gemini 沒有返回內容。")
-
         st.session_state.gemini_model = GEMINI_MODEL
-
         return text
-
     except Exception as e:
         error = str(e)
-
         if "404" in error:
-            error = "Gemini 模型不存在或目前 API 不支援此模型（404）。"
+            error = "Gemini 模型不存在或 API 不支援此模型（404）。"
         elif "401" in error:
             error = "Gemini API Key 無效（401）。"
         elif "403" in error:
@@ -370,78 +270,403 @@ def gemini_text(prompt, image_bytes=None, mime_type="image/jpeg"):
             error = "Gemini API 額度或頻率限制（429）。"
         elif "400" in error:
             error = "Gemini 請求格式錯誤（400）。"
-
         st.session_state.gemini_error = error
         raise RuntimeError(error)
 
 
 def gemini_json(prompt, image_bytes=None, mime_type="image/jpeg"):
-    text = gemini_text(
-        prompt,
-        image_bytes=image_bytes,
-        mime_type=mime_type,
-    )
-
-    cleaned = clean_json_text(text)
-
+    text = clean_json_text(gemini_text(prompt, image_bytes, mime_type))
     try:
-        return json.loads(cleaned)
+        return json.loads(text)
     except Exception:
-        # 嘗試找 JSON 區塊
-        match = re.search(r"\{.*\}", cleaned, re.S)
-
+        match = re.search(r"\{.*\}", text, re.S)
         if match:
             try:
                 return json.loads(match.group(0))
             except Exception:
                 pass
-
         raise RuntimeError("Gemini 回傳內容不是有效 JSON。")
 
 
-# =========================================================
-# 圖片處理
-# =========================================================
 def process_image(uploaded_file):
     if not uploaded_file:
         return None, None
-
     raw = uploaded_file.getvalue()
-
     if len(raw) > MAX_IMAGE_MB * 1024 * 1024:
         raise ValueError(f"圖片超過 {MAX_IMAGE_MB}MB。")
-
     image = Image.open(io.BytesIO(raw))
-
     image = ImageOps.exif_transpose(image)
-
     if image.mode not in ("RGB", "RGBA"):
         image = image.convert("RGB")
-
-    image.thumbnail(
-        (MAX_IMAGE_SIZE, MAX_IMAGE_SIZE),
-        Image.Resampling.LANCZOS,
-    )
-
+    image.thumbnail((MAX_IMAGE_SIZE, MAX_IMAGE_SIZE), Image.Resampling.LANCZOS)
     output = io.BytesIO()
-
     if image.mode == "RGBA":
         image.save(output, format="PNG")
         mime = "image/png"
     else:
-        image.save(
-            output,
-            format="JPEG",
-            quality=92,
-        )
+        image.save(output, format="JPEG", quality=92)
         mime = "image/jpeg"
-
     return output.getvalue(), mime
 
 
-# =========================================================
-# 商品分類
-# =========================================================
+def detect_category(text):
+    text = (text or "").lower()
+    categories = {
+        "保養美妝": ["洗面", "面膜", "乳液", "精華", "保養", "化妝", "美容", "防曬"],
+        "3C": ["手機", "耳機", "充電", "電腦", "鍵盤", "滑鼠", "3c", "平板"],
+        "居家生活": ["收納", "清潔", "家居", "廚房", "杯", "居家"],
+        "服飾": ["衣服", "褲", "鞋", "帽", "包", "服飾"],
+        "食品": ["食品", "零食", "餅乾", "飲料", "茶", "咖啡"],
+        "汽機車": ["汽車", "機車", "車用", "汽機車"],
+    }
+    for category, keywords in categories.items():
+        if any(k in text for k in keywords):
+            return category
+    return "其他"
+
+
+def build_ai_prompt(product):
+    return f"""
+你是「AI 蝦皮全自動化 2.5 PRO」電商 AI。
+請根據商品資料與上傳圖片，產生完整電商素材。
+
+商品名稱：{product['name']}
+分類：{product['category']}
+價格：{product['price']}
+商品特色：{product['features']}
+商品賣點：{product['selling_points']}
+
+重要規則：
+1. 商品圖片是外觀主要依據。
+2. 不得虛構品牌、Logo、文字、功能、配件或商品資訊。
+3. 不得修改商品顏色、比例、材質、包裝、形狀。
+4. 不得虛構價格、折扣、贈品。
+5. 不確定的資訊請標示「未確認」。
+6. 全部使用繁體中文。
+7. TikTok 開場前3秒必須有 Hook。
+8. 即夢 Prompt 必須強調商品一致性。
+9. 影片預設 9:16。
+10. 內容以電商實際可用為導向。
+
+請只回傳 JSON，格式：
+{{
+"product_analysis": {{
+"basic": "",
+"appearance": "",
+"material": "",
+"color": "",
+"packaging": "",
+"logo_text": "",
+"features": []
+}},
+"selling_points": [],
+"target_audience": [],
+"consumer_needs": [],
+"market_positioning": "",
+"purchase_reasons": [],
+"advantages": [],
+"disadvantages": [],
+"risks": [],
+"selection_score": 0,
+"market_attractiveness": 0,
+"visual_attractiveness": 0,
+"short_video_score": 0,
+"tiktok_score": 0,
+"shopee_score": 0,
+"selling_direction": "",
+"shopee": {{
+"title": "",
+"description": "",
+"selling_points": [],
+"keywords": [],
+"long_tail_keywords": []
+}},
+"tiktok": {{
+"title": "",
+"hook": "",
+"copy": "",
+"hashtags": [],
+"script_15": "",
+"script_30": ""
+}},
+"jimeng": {{
+"image_prompt": "",
+"cover_prompt": "",
+"video_prompt_15": "",
+"video_prompt_30": ""
+}}
+}}
+"""
+
+
+def local_fallback(product):
+    name = product["name"]
+    category = product["category"]
+    features = product["features"] or "請以商品資料為準"
+    selling = product["selling_points"] or "請以商品資料為準"
+    return {
+        "product_analysis": {
+            "basic": f"{name}，分類：{category}",
+            "appearance": "請以商品原圖為準",
+            "material": "未確認",
+            "color": "請以商品原圖為準",
+            "packaging": "請以商品原圖為準",
+            "logo_text": "請以商品原圖為準",
+            "features": [features],
+        },
+        "selling_points": [selling],
+        "target_audience": ["對此類商品有需求的消費者"],
+        "consumer_needs": ["便利性", "實用性", "商品特色"],
+        "market_positioning": "實用型電商商品",
+        "purchase_reasons": ["商品特色", "使用便利"],
+        "advantages": ["適合短影音展示"],
+        "disadvantages": ["缺少即時市場數據"],
+        "risks": ["AI 分析不能取代實際市場測試"],
+        "selection_score": 75,
+        "market_attractiveness": 75,
+        "visual_attractiveness": 75,
+        "short_video_score": 80,
+        "tiktok_score": 78,
+        "shopee_score": 80,
+        "selling_direction": "以商品特色、實際使用情境與視覺展示為主要方向。",
+        "shopee": {
+            "title": f"{name}｜實用好物推薦",
+            "description": f"{name}\n\n商品特色：{features}\n商品賣點：{selling}\n\n實際規格與資訊請以商品頁為準。",
+            "selling_points": [selling, features],
+            "keywords": [name, category],
+            "long_tail_keywords": [f"{name}推薦", f"{category}好物"],
+        },
+        "tiktok": {
+            "title": f"{name}實用好物推薦",
+            "hook": f"如果你正在找{name}，先看這個！",
+            "copy": f"今天分享一個實用好物：{name}。{features}",
+            "hashtags": ["#TikTok", "#好物推薦", "#生活好物", "#蝦皮"],
+            "script_15": f"前3秒：你還在找{category}嗎？\n展示{name}。\n介紹：{features}。\n結尾：有需求可以進一步了解。",
+            "script_30": f"開場：你還在找{category}嗎？\n展示{name}。\n特色：{features}。\n賣點：{selling}。\n結尾：有需求可以進一步了解。",
+        },
+        "jimeng": {
+            "image_prompt": f"使用上傳商品圖片作為唯一商品外觀依據，保持{name}原始品牌、Logo、包裝、顏色、材質、比例、形狀與文字一致。高級商業商品攝影，自然光，乾淨背景，9:16。禁止修改商品。",
+            "cover_prompt": f"以原商品圖片為唯一商品依據，製作高級電商封面，商品外觀完全保持原樣，不修改Logo、文字、顏色、包裝與比例，9:16。",
+            "video_prompt_15": f"9:16直式15秒商品廣告。使用原商品圖片作為唯一商品依據。保持商品外觀一致。高級商業攝影、自然光、慢速推鏡、商品特寫、輕微環繞。禁止改品牌、Logo、包裝、顏色、比例、文字或增加不存在物件。",
+            "video_prompt_30": f"9:16直式30秒商品廣告。以原商品圖片為唯一依據。開場商品特寫，中段展示細節與使用情境，結尾產品英雄鏡頭。保持商品外觀、品牌、Logo、包裝、文字、顏色、材質與比例一致。禁止虛構商品資訊。",
+        },
+    }
+
+
+def run_product_ai(product):
+    return gemini_json(
+        build_ai_prompt(product),
+        image_bytes=product.get("image_bytes"),
+        mime_type=product.get("image_mime", "image/jpeg"),
+    )
+
+
+def edge_tts_available():
+    return shutil.which("edge-tts") is not None
+
+
+def create_tts(text, output_path):
+    if not edge_tts_available():
+        raise RuntimeError("找不到 edge-tts，請確認 requirements.txt 已安裝 edge-tts。")
+    subprocess.run(
+        [
+            "edge-tts",
+            "--text",
+            text,
+            "--voice",
+            "zh-TW-HsiaoChenNeural",
+            "--write-media",
+            str(output_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def ffmpeg_available():
+    return shutil.which("ffmpeg") is not None
+
+
+def create_video(background, audio, output):
+    if not ffmpeg_available():
+        raise RuntimeError("找不到 FFmpeg，請確認 packages.txt 包含 ffmpeg。")
+    command = [
+        "ffmpeg", "-y",
+        "-stream_loop", "-1",
+        "-i", str(background),
+        "-i", str(audio),
+        "-vf",
+        "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-shortest",
+        "-movflags", "+faststart",
+        str(output),
+    ]
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    return output
+
+
+def download_pexels_video(keyword, output_path):
+    if not PEXELS_KEY:
+        raise RuntimeError("未設定 PEXELS_KEY。")
+    import requests
+    headers = {"Authorization": PEXELS_KEY}
+    url = "https://api.pexels.com/videos/search"
+    params = {"query": keyword or "product commercial", "orientation": "portrait", "per_page": 5}
+    response = requests.get(url, headers=headers, params=params, timeout=30)
+    response.raise_for_status()
+    videos = response.json().get("videos", [])
+    if not videos:
+        params["query"] = "product commercial"
+        response = requests.get(url, headers=headers, params=params, timeout=30)
+        response.raise_for_status()
+        videos = response.json().get("videos", [])
+    if not videos:
+        raise RuntimeError("Pexels 找不到影片素材。")
+    files = videos[0].get("video_files", [])
+    if not files:
+        raise RuntimeError("Pexels 影片沒有可下載檔案。")
+    files.sort(key=lambda x: x.get("width", 0) * x.get("height", 0), reverse=True)
+    video_response = requests.get(files[0]["link"], timeout=120)
+    video_response.raise_for_status()
+    output_path.write_bytes(video_response.content)
+    return output_path
+
+
+def result_text(result, section):
+    return json.dumps(result.get(section, {}), ensure_ascii=False, indent=2)
+
+
+def save_history(product, result):
+    history_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + secrets.token_hex(3)
+    folder = HISTORY_DIR / history_id
+    folder.mkdir(parents=True, exist_ok=True)
+
+    product_copy = dict(product)
+    product_copy.pop("image_bytes", None)
+    save_json(folder / "product.json", product_copy)
+    save_json(folder / "ai_result.json", result)
+
+    if product.get("image_bytes"):
+        (folder / safe_filename(product.get("image_name", "product.jpg"))).write_bytes(product["image_bytes"])
+
+    files = {
+        "商品分析.txt": result_text(result, "product_analysis"),
+        "AI選品.txt": json.dumps(
+            {
+                "selection_score": result.get("selection_score"),
+                "market_attractiveness": result.get("market_attractiveness"),
+                "visual_attractiveness": result.get("visual_attractiveness"),
+                "short_video_score": result.get("short_video_score"),
+                "tiktok_score": result.get("tiktok_score"),
+                "shopee_score": result.get("shopee_score"),
+                "advantages": result.get("advantages"),
+                "disadvantages": result.get("disadvantages"),
+                "risks": result.get("risks"),
+                "selling_direction": result.get("selling_direction"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        "蝦皮文案.txt": result_text(result, "shopee"),
+        "TikTok文案.txt": result_text(result, "tiktok"),
+        "即夢Prompt.txt": result_text(result, "jimeng"),
+    }
+
+    for filename, content in files.items():
+        (folder / filename).write_text(content, encoding="utf-8")
+
+    st.session_state.last_history_id = history_id
+    return history_id
+
+
+def build_zip(product, result, video_bytes=None):
+    memory = io.BytesIO()
+    with zipfile.ZipFile(memory, "w", zipfile.ZIP_DEFLATED) as z:
+        product_copy = dict(product)
+        product_copy.pop("image_bytes", None)
+        z.writestr("商品資料.json", json.dumps(product_copy, ensure_ascii=False, indent=2))
+        z.writestr("商品分析.txt", result_text(result, "product_analysis"))
+        z.writestr(
+            "AI選品.txt",
+            json.dumps(
+                {k: result.get(k) for k in [
+                    "selection_score", "market_attractiveness", "visual_attractiveness",
+                    "short_video_score", "tiktok_score", "shopee_score",
+                    "advantages", "disadvantages", "risks", "selling_direction"
+                ]},
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        z.writestr("蝦皮文案.txt", result_text(result, "shopee"))
+        z.writestr("TikTok文案.txt", result_text(result, "tiktok"))
+        z.writestr("即夢圖片與影片Prompt.txt", result_text(result, "jimeng"))
+        if product.get("image_bytes"):
+            z.writestr(safe_filename(product.get("image_name", "product.jpg")), product["image_bytes"])
+        if video_bytes:
+            z.writestr("自動生成短影音.mp4", video_bytes)
+    memory.seek(0)
+    return memory.getvalue()
+
+
+def history_items():
+    return sorted([p for p in HISTORY_DIR.iterdir() if p.is_dir()], reverse=True)
+
+
+def logout():
+    for key in ["logged_in", "username", "member"]:
+        st.session_state[key] = DEFAULT_STATE[key]
+    st.session_state.page = "Dashboard"
+
+
+def login_page():
+    st.markdown('<div class="main-title">🛒 AI 蝦皮全自動化 2.5 PRO</div>', unsafe_allow_html=True)
+    st.caption("辰曦 AI 電商全自動化系統")
+
+    tab1, tab2 = st.tabs(["登入", "註冊"])
+
+    with tab1:
+        with st.form("login_form"):
+            username = st.text_input("帳號")
+            password = st.text_input("密碼", type="password")
+            submitted = st.form_submit_button("登入", type="primary", use_container_width=True)
+        if submitted:
+            member, error = authenticate(username, password)
+            if member:
+                st.session_state.logged_in = True
+                st.session_state.username = username.strip()
+                st.session_state.member = member
+                st.session_state.page = "Dashboard"
+                st.rerun()
+            st.error(error)
+
+    with tab2:
+        with st.form("register_form"):
+            username = st.text_input("新帳號")
+            password = st.text_input("新密碼", type="password")
+            password2 = st.text_input("再次輸入密碼", type="password")
+            submitted = st.form_submit_button("建立會員", use_container_width=True)
+        if submitted:
+            if password != password2:
+                st.error("兩次密碼不一致。")
+            else:
+                ok, msg = create_member(username, password, DEFAULT_MEMBER_DAYS)
+                (st.success if ok else st.error)(msg)
+
+
+def dashboard_page():
+    member = st.session_state.member
+    status, valid, days = member_status(member)
+    st.markdown('<div class="main-title">📊 Dashboard</div>', unsafe_allow_html=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("會員", member.get("username", ""))
+    c2.metric("狀態", "正常" if valid else "不=====
 def detect_category(text):
     text = (text or "").lower()
 
