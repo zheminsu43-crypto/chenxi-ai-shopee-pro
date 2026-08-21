@@ -5,6 +5,7 @@ import json
 import hashlib
 import secrets
 import shutil
+import asyncio
 import subprocess
 from pathlib import Path
 from datetime import datetime, date, timedelta
@@ -13,10 +14,10 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 # =========================================================
-# AI 蝦皮全自動化 2.5 PRO - 完整修正版
+# AI 蝦皮全自動化 2.5 PRO - 完整修復版
 # =========================================================
 APP_NAME = "AI 蝦皮全自動化 2.5 PRO"
-APP_VERSION = "2.5.1"
+APP_VERSION = "2.5.2"
 
 DATA_DIR = Path("data")
 HISTORY_DIR = Path("history")
@@ -336,12 +337,12 @@ def prepare_image(uploaded_file):
 
 
 # =========================================================
-# Gemini
+# Gemini API
 # =========================================================
 def get_gemini_client():
     if not GEMINI_KEY:
         raise RuntimeError(
-            "尚未設定 GEMINI_KEY。請在 Streamlit Secrets 加入 GEMINI_KEY。"
+            "尚未設定 GEMINI_KEY。請在 Streamlit Secrets 或環境變數中設定。"
         )
 
     try:
@@ -379,6 +380,409 @@ def ask_gemini(prompt, image_bytes=None, mime_type="image/jpeg"):
         )
 
         text = getattr(response, "text", None)
+        if not text:
+            raise RuntimeError("Gemini 沒有返回文字內容。")
+
+        st.session_state.gemini_model = GEMINI_MODEL
+        st.session_state.gemini_error = ""
+        return text.strip()
+
+    except Exception as exc:
+        raw = str(exc)
+
+        if "404" in raw:
+            msg = "Gemini 模型不存在或 API 暫不支援（404）。"
+        elif "401" in raw:
+            msg = "Gemini API Key 無效（401）。"
+        elif "403" in raw:
+            msg = "Gemini API 權限不足（403）。"
+        elif "429" in raw:
+            msg = "Gemini API 呼叫頻率過高（429）。"
+        elif "400" in raw:
+            msg = "Gemini 請求格式錯誤（400）。"
+        else:
+            msg = f"Gemini 執行失敗：{raw}"
+
+        st.session_state.gemini_error = msg
+        raise RuntimeError(msg) from exc
+
+
+# =========================================================
+# Prompt 樣板
+# =========================================================
+SHOPEE_PROMPT_TEMPLATE = """
+請輸出：
+1. SEO 商品標題
+2. 商品賣點 5 點
+3. 完整商品描述
+4. 關鍵字
+5. 長尾關鍵字
+6. FAQ 5 題
+不得虛構品牌、規格、認證、效果、折扣或贈品。
+"""
+
+TIKTOK_PROMPT_TEMPLATE = """
+請輸出：
+1. 爆款標題
+2. 0~3 秒 Hook
+3. 15 秒口播
+4. 25 秒口播
+5. 貼文文案
+6. Hashtags
+要求前 3 秒抓住注意力，但不得使用無法證實的誇大承諾。
+"""
+
+JIMENG_25_RULES = """
+上傳商品圖是商品外觀的唯一主要依據。
+必須維持品牌、Logo、包裝、文字、顏色、材質、形狀、比例與細節一致。
+不得重新設計包裝、改 Logo、改字、改顏色、增加不存在配件。
+可改變的是場景、背景、燈光、鏡頭、景深與商業攝影氛圍。
+影片預設 9:16 直式。
+"""
+
+
+def build_master_prompt(product):
+    p = {key: str(value or "").strip() for key, value in product.items()}
+
+    return f"""
+你是「{APP_NAME}」的核心電商 AI。
+請使用繁體中文。
+只能根據商品圖片與使用者提供的資料回答；不確定的資訊一律寫「待確認」。
+
+==============================
+【商品資料】
+==============================
+商品名稱：{p.get('name')}
+商品分類：{p.get('category')}
+售價：{p.get('price')}
+成本：{p.get('cost')}
+分潤比例：{p.get('commission')}
+預估月銷量：{p.get('sales')}
+商品評分：{p.get('rating')}
+商品連結：{p.get('url')}
+商品規格：{p.get('specs')}
+目標平台：{p.get('platform')}
+
+==============================
+【資料真實性規則】
+==============================
+1. 不得虛構品牌、Logo、規格、認證、成分、功能、價格、折扣、贈品或效果。
+2. 圖片看不清楚的文字請寫「待確認」。
+3. 使用者沒有提供的數據，不得自行補數字。
+4. 不得把 AI 推測寫成確定事實。
+5. 行銷文案可以有吸引力，但不能做無法證實的誇大承諾。
+
+==============================
+【任務一：商品辨識與 AI 選品分析】
+==============================
+請分析：
+- 商品名稱與分類
+- 圖片可確認資訊
+- 待確認資訊
+- 外觀、包裝、Logo、文字
+- 主要賣點
+- 目標客群
+- 消費需求
+- 市場定位
+- 優勢
+- 劣勢
+- 短影音切入點
+- 購買誘因
+- 合規提醒
+- 選品分數 0~100
+- 市場吸引力 0~100
+- 視覺吸引力 0~100
+- TikTok 潛力 0~100
+- 蝦皮潛力 0~100
+
+==============================
+【任務二：蝦皮高轉化上架文案】
+==============================
+{SHOPEE_PROMPT_TEMPLATE}
+
+==============================
+【任務三：TikTok 爆款帶貨文案】
+==============================
+{TIKTOK_PROMPT_TEMPLATE}
+
+==============================
+【任務四：即夢 AI 2.5 商業生圖 Prompt】
+==============================
+{JIMENG_25_RULES}
+請輸出：
+- 【即夢 AI 2.5 生圖英文 Prompt】
+- 【Negative Prompt】
+- 【畫面繁體中文文字設計】
+- 【9:16 構圖與光影建議】
+
+==============================
+【任務五：即夢 AI 2.5 商業影片 Prompt】
+==============================
+請輸出英文影片 Prompt，必須包含：
+Opening、Middle、Camera Motion、Lighting、Product Detail、Ending Freeze。
+另外輸出 Negative Prompt。
+
+==============================
+【任務六：即夢 AI 2.5 25 秒帶貨分鏡】
+==============================
+0~3 秒：黃金 Hook
+3~8 秒：商品全貌與品質展示
+8~15 秒：核心賣點與細節特寫
+15~20 秒：使用情境與價值呈現
+20~25 秒：CTA 與結尾定格
+
+==============================
+【任務七：最終檢查】
+==============================
+檢查是否有虛構資料、誇大宣稱、錯誤品牌、錯誤規格，
+以及是否維持原商品圖片的一致性。
+
+請輸出完整、可直接複製使用的 Markdown 報告。
+"""
+
+
+def detect_category(text):
+    text = (text or "").lower()
+    groups = {
+        "保養美妝": ["洗面", "面膜", "乳液", "精華", "保養", "化妝", "美容", "防曬", "洗髮"],
+        "3C": ["手機", "耳機", "充電", "電腦", "鍵盤", "滑鼠", "3c", "平板", "螢幕"],
+        "居家生活": ["收納", "清潔", "家居", "廚房", "杯", "居家", "拖把", "用品"],
+        "服飾": ["衣服", "褲", "鞋", "帽", "包", "服飾", "外套"],
+        "食品": ["食品", "零食", "餅乾", "飲料", "茶", "咖啡", "水果"],
+        "汽機車": ["汽車", "機車", "車用", "汽機車", "輪胎"],
+    }
+
+    for category, keywords in groups.items():
+        if any(keyword in text for keyword in keywords):
+            return category
+
+    return "其他"
+
+
+# =========================================================
+# 歷史紀錄
+# =========================================================
+def save_history(product, result):
+    history_id = (
+        datetime.now().strftime("%Y%m%d_%H%M%S")
+        + "_"
+        + secrets.token_hex(3)
+    )
+
+    folder = HISTORY_DIR / history_id
+    folder.mkdir(parents=True, exist_ok=True)
+
+    product_copy = dict(product)
+    product_copy.pop("image_bytes", None)
+
+    save_json(folder / "product.json", product_copy)
+    (folder / "result.md").write_text(result, encoding="utf-8")
+
+    return history_id
+
+
+def list_history(limit=30):
+    items = []
+
+    for folder in sorted(HISTORY_DIR.glob("*"), reverse=True):
+        if not folder.is_dir():
+            continue
+
+        product = load_json(folder / "product.json", {})
+        result_file = folder / "result.md"
+
+        items.append(
+            {
+                "id": folder.name,
+                "product": product.get("name", "未命名"),
+                "result": result_file.read_text(encoding="utf-8") if result_file.exists() else "",
+            }
+        )
+
+        if len(items) >= limit:
+            break
+
+    return items
+
+
+# =========================================================
+# 短影音工具：Edge TTS / Pexels / FFmpeg
+# =========================================================
+def tool_available(name):
+    return shutil.which(name) is not None
+
+
+async def _async_tts(text, output_path):
+    import edge_tts
+    communicate = edge_tts.Communicate(text, "zh-TW-HsiaoChenNeural")
+    await communicate.save(str(output_path))
+
+
+def create_tts(text, output_path):
+    """採用 Python 非同步 API 直接生成語音，相容性更高"""
+    try:
+        asyncio.run(_async_tts(text, output_path))
+    except ImportError:
+        # 降級方案：嘗試命令列呼叫
+        if not tool_available("edge-tts"):
+            raise RuntimeError("找不到 edge-tts 套件，請在 requirements.txt 加入 edge-tts。")
+        subprocess.run(
+            [
+                "edge-tts",
+                "--text", text,
+                "--voice", "zh-TW-HsiaoChenNeural",
+                "--write-media", str(output_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+
+def download_pexels_video(keyword, output_path):
+    if not PEXELS_KEY:
+        raise RuntimeError("尚未設定 PEXELS_KEY。")
+
+    try:
+        import requests
+    except ImportError as exc:
+        raise RuntimeError("缺少 requests，請加入 requirements.txt。") from exc
+
+    headers = {
+        "Authorization": PEXELS_KEY,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    params = {
+        "query": keyword or "product commercial",
+        "orientation": "portrait",
+        "per_page": 5,
+    }
+
+    response = requests.get(
+        "https://api.pexels.com/videos/search",
+        headers=headers,
+        params=params,
+        timeout=30,
+    )
+    response.raise_for_status()
+
+    videos = response.json().get("videos", [])
+
+    if not videos:
+        params["query"] = "abstract product"
+        response = requests.get(
+            "https://api.pexels.com/videos/search",
+            headers=headers,
+            params=params,
+            timeout=30,
+        )
+        response.raise_for_status()
+        videos = response.json().get("videos", [])
+
+    if not videos:
+        raise RuntimeError("Pexels 找不到適合的影片素材。")
+
+    files = videos[0].get("video_files", [])
+    if not files:
+        raise RuntimeError("Pexels 影片沒有可下載檔案。")
+
+    portrait = [
+        item for item in files
+        if item.get("height", 0) >= item.get("width", 0)
+    ]
+    files = portrait or files
+    files.sort(
+        key=lambda item: item.get("width", 0) * item.get("height", 0),
+        reverse=True,
+    )
+
+    video_response = requests.get(
+        files[0]["link"],
+        headers=headers,
+        timeout=120,
+    )
+    video_response.raise_for_status()
+    output_path.write_bytes(video_response.content)
+
+    if output_path.stat().st_size > MAX_VIDEO_MB * 1024 * 1024:
+        raise RuntimeError(f"影片超過 {MAX_VIDEO_MB}MB。")
+
+    return output_path
+
+
+def create_video(background, audio, output):
+    if not tool_available("ffmpeg"):
+        raise RuntimeError(
+            "找不到 FFmpeg。若在 Streamlit Cloud 部署，請新增 packages.txt 並寫入 ffmpeg。"
+        )
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-stream_loop", "-1",
+        "-i", str(background),
+        "-i", str(audio),
+        "-vf",
+        "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-shortest",
+        "-movflags", "+faststart",
+        str(output),
+    ]
+
+    subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    return output
+
+
+# =========================================================
+# 登入頁
+# =========================================================
+def render_login_page():
+    st.markdown(
+        f'<div class="main-title">🛒 {APP_NAME}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="sub-title">永久會員｜管理員｜Gemini 2.5 Flash｜TikTok｜即夢 AI 2.5</div>',
+        unsafe_allow_html=True,
+    )
+
+    login_tab, register_tab = st.tabs(["🔐 會員登入", "📝 會員註冊"])
+
+    with login_tab:
+        with st.form("login_form"):
+            username = st.text_input("會員帳號", key="login_username")
+            password = st.text_input("會員密碼", type="password", key="login_password")
+            submitted = st.form_submit_button("登入", use_container_width=True)
+
+        if submitted:
+            ok, message = login_user(username, password)
+            if ok:
+                st.success(message)
+                st.rerun()
+            else:
+                st.error(message)
+
+        st.info(f"預設管理員帳號：admin / 密碼：{DEFAULT_ADMIN_PASSWORD}")
+
+    with register_tab:
+        with st.form("register_form"):
+            username = st.text_input("新會員帳號", key="reg_username")
+            name = st.text_input("姓名 / 暱稱", key="reg_name")
+            email = st.text_input("Email", key="reg_email")
+            password = st.text_input("設定密碼", type="password", key="reg_password")
+    xt", None)
         if not text:
             raise RuntimeError("Gemini 沒有返回文字內容。")
 
