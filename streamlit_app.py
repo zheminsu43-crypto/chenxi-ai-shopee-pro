@@ -1,385 +1,620 @@
-import io
-import os
-import re
-import json
-import hashlib
-import secrets
-import shutil
-import asyncio
-import subprocess
-from pathlib import Path
-from datetime import datetime, date, timedelta
-
 import streamlit as st
-from PIL import Image, ImageOps
+from PIL import Image
+from datetime import datetime
+import random
+import re
 
 # =========================================================
-# AI 蝦皮全自動化 2.5 PRO - 完整修復版
+# AI 蝦皮半自動化 2.5 PRO
+# Streamlit UI 完整版
 # =========================================================
-APP_NAME = "AI 蝦皮全自動化 2.5 PRO"
-APP_VERSION = "2.5.2"
 
-DATA_DIR = Path("data")
-HISTORY_DIR = Path("history")
-MEDIA_DIR = DATA_DIR / "media"
-MEMBERS_FILE = DATA_DIR / "members.json"
+APP_NAME = "AI 蝦皮自動化"
+APP_VERSION = "2.5 PRO"
 
-for folder in (DATA_DIR, HISTORY_DIR, MEDIA_DIR):
-    folder.mkdir(parents=True, exist_ok=True)
-
-MAX_IMAGE_SIZE = 1600
-MAX_IMAGE_MB = 20
-MAX_VIDEO_MB = 300
-
-ADMIN_USERNAME = "admin"
-DEFAULT_ADMIN_PASSWORD = os.environ.get("DEFAULT_ADMIN_PASSWORD", "admin123456")
-GEMINI_MODEL = "gemini-2.5-flash"
+# =========================================================
+# PAGE CONFIG
+# =========================================================
 
 st.set_page_config(
-    page_title=APP_NAME,
-    page_icon="🛒",
+    page_title=f"{APP_NAME} {APP_VERSION}",
+    page_icon="🛍️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.markdown(
-    """
-<style>
-.main-title{font-size:36px;font-weight:800}
-.sub-title{color:#777;margin-bottom:20px}
-.member-card{padding:14px;border-radius:14px;border:1px solid rgba(128,128,128,.25);margin:10px 0}
-.small{color:#777;font-size:14px}
-.result-box{padding:18px;border-radius:16px;border:1px solid rgba(128,128,128,.25)}
-</style>
-""",
-    unsafe_allow_html=True,
-)
+# =========================================================
+# CSS
+# =========================================================
 
-# =========================================================
-# Session State
-# =========================================================
-DEFAULT_STATE = {
-    "logged_in": False,
-    "username": "",
-    "name": "",
-    "role": "",
-    "member": {},
-    "page": "home",
-    "result": "",
-    "last_product": {},
-    "last_image_bytes": None,
-    "last_image_mime": "image/jpeg",
-    "last_video_bytes": None,
-    "last_video_name": "",
-    "last_video_mime": "video/mp4",
-    "gemini_model": GEMINI_MODEL,
-    "gemini_error": "",
+st.markdown("""
+<style>
+
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700;800&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Noto Sans TC', sans-serif;
 }
 
-for key, value in DEFAULT_STATE.items():
-    if key not in st.session_state:
-        st.session_state[key] = value
+.stApp {
+    background:
+        radial-gradient(circle at 20% 0%, rgba(255, 90, 0, 0.08), transparent 25%),
+        radial-gradient(circle at 80% 10%, rgba(0, 140, 255, 0.06), transparent 25%),
+        #05080d;
+    color: #f5f7fa;
+}
 
+/* 隱藏 Streamlit 預設元素 */
+#MainMenu {
+    visibility: hidden;
+}
 
-# =========================================================
-# Secrets / API
-# =========================================================
-def get_secret(name, default=""):
-    try:
-        value = st.secrets.get(name, default)
-        if value:
-            return str(value)
-    except Exception:
-        pass
-    return os.environ.get(name, default)
+footer {
+    visibility: hidden;
+}
 
+header {
+    background: transparent !important;
+}
 
-GEMINI_KEY = get_secret("GEMINI_KEY") or get_secret("GEMINI_API_KEY")
-PEXELS_KEY = get_secret("PEXELS_KEY")
+/* sidebar */
 
+section[data-testid="stSidebar"] {
+    background:
+        linear-gradient(180deg, #0a1018 0%, #070b11 100%);
+    border-right: 1px solid rgba(255,255,255,0.08);
+}
 
-# =========================================================
-# 基礎工具
-# =========================================================
-def now_text():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+section[data-testid="stSidebar"] > div {
+    padding-top: 18px;
+}
 
+/* Sidebar logo */
 
-def hash_password(password):
-    return hashlib.sha256(str(password).encode("utf-8")).hexdigest()
+.sidebar-logo {
+    padding: 12px 8px 20px 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    margin-bottom: 16px;
+}
 
+.logo-icon {
+    width: 42px;
+    height: 42px;
+    background: linear-gradient(135deg, #ff6a00, #ff3d00);
+    border-radius: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 25px;
+    box-shadow: 0 0 25px rgba(255,80,0,0.25);
+    margin-right: 10px;
+}
 
-def safe_filename(name):
-    name = re.sub(r'[\\/:*?"<>|]+', "_", str(name or "file"))
-    name = re.sub(r"\s+", " ", name).strip()
-    return name[:100] or "file"
+.logo-title {
+    font-size: 19px;
+    font-weight: 800;
+    color: #fff;
+}
 
+.logo-sub {
+    font-size: 11px;
+    color: #7f8b99;
+    margin-left: 53px;
+    margin-top: -7px;
+}
 
-def load_json(path, default):
-    try:
-        path = Path(path)
-        if not path.exists():
-            return default
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data
-    except Exception:
-        return default
+/* top header */
 
+.top-header {
+    background:
+        linear-gradient(135deg,
+        rgba(14,21,31,0.96),
+        rgba(8,13,20,0.96));
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 14px;
+    padding: 13px 18px;
+    margin-bottom: 14px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+}
 
-def save_json(path, data):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    with temp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    temp.replace(path)
+.top-title {
+    font-size: 24px;
+    font-weight: 800;
+    color: #fff;
+}
 
+.pro-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    color: #ff9d52;
+    border: 1px solid #ff6a00;
+    background: rgba(255,90,0,0.1);
+}
 
-# =========================================================
-# 會員系統
-# =========================================================
-def load_members():
-    members = load_json(MEMBERS_FILE, {})
-    return members if isinstance(members, dict) else {}
+.top-sub {
+    color: #8793a1;
+    font-size: 12px;
+}
 
+/* metric */
 
-def save_members(members):
-    save_json(MEMBERS_FILE, members)
+.metric-card {
+    background:
+        linear-gradient(145deg,#111a25,#0b1119);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 13px;
+    padding: 12px 14px;
+    min-height: 78px;
+}
 
+.metric-title {
+    font-size: 11px;
+    color: #8995a4;
+}
 
-def ensure_admin():
-    members = load_members()
-    changed = False
-    admin = members.get(ADMIN_USERNAME)
+.metric-value {
+    font-size: 20px;
+    font-weight: 800;
+    margin-top: 4px;
+}
 
-    if not isinstance(admin, dict):
-        members[ADMIN_USERNAME] = {
-            "username": ADMIN_USERNAME,
-            "name": "系統管理員",
-            "email": "",
-            "password_hash": hash_password(DEFAULT_ADMIN_PASSWORD),
-            "created_at": now_text(),
-            "expire_date": None,
-            "permanent": True,
-            "role": "admin",
-            "status": "active",
-        }
-        changed = True
-    else:
-        defaults = {
-            "username": ADMIN_USERNAME,
-            "name": "系統管理員",
-            "email": "",
-            "created_at": now_text(),
-            "expire_date": None,
-            "permanent": True,
-            "role": "admin",
-            "status": "active",
-        }
-        for key, value in defaults.items():
-            if key not in admin:
-                admin[key] = value
-                changed = True
-        if admin.get("role") != "admin":
-            admin["role"] = "admin"
-            changed = True
+.metric-orange {
+    color: #ff6a00;
+}
 
-    if changed:
-        save_members(members)
+.metric-green {
+    color: #50d890;
+}
 
+.metric-blue {
+    color: #4ab7ff;
+}
 
-def member_expiration(member):
-    if member.get("permanent", True):
-        return "永久會員", True
+.metric-purple {
+    color: #b28cff;
+}
 
-    expire = member.get("expire_date")
-    if not expire:
-        return "未設定", False
+/* section */
 
-    try:
-        expire_date = date.fromisoformat(expire)
-    except Exception:
-        return "日期錯誤", False
+.section-title {
+    font-size: 16px;
+    font-weight: 800;
+    color: #fff;
+    margin: 5px 0 10px 2px;
+}
 
-    days = (expire_date - date.today()).days
-    if days < 0:
-        return f"已到期（{abs(days)} 天）", False
+/* workflow */
 
-    return f"剩餘 {days} 天", True
+.workflow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #0b121b;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 14px;
+    padding: 12px;
+    margin-bottom: 14px;
+    overflow-x: auto;
+}
 
+.workflow-item {
+    min-width: 150px;
+    flex: 1;
+    background: linear-gradient(145deg,#111b27,#0a1119);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    padding: 10px;
+}
 
-def create_member(
-    username,
-    password,
-    name="",
-    email="",
-    role="member",
-    permanent=True,
-    days=30,
-):
-    username = str(username or "").strip()
-    password = str(password or "")
-    name = str(name or "").strip()
-    email = str(email or "").strip()
+.workflow-icon {
+    font-size: 23px;
+}
 
-    if not username or not password:
-        return False, "帳號與密碼不能為空。"
-    if len(username) < 3:
-        return False, "帳號至少 3 個字元。"
-    if len(password) < 6:
-        return False, "密碼至少 6 個字元。"
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", username):
-        return False, "帳號只能使用英數、底線、點或連字號。"
+.workflow-title {
+    font-size: 13px;
+    font-weight: 800;
+    margin-top: 4px;
+}
 
-    members = load_members()
-    if username in members:
-        return False, "帳號已存在。"
+.workflow-desc {
+    color: #7e8a99;
+    font-size: 10px;
+}
 
-    expire_date = None
-    if not permanent:
-        expire_date = (date.today() + timedelta(days=int(days))).isoformat()
+.arrow {
+    color: #ff6a00;
+    font-size: 20px;
+    font-weight: bold;
+}
 
-    members[username] = {
-        "username": username,
-        "name": name or username,
-        "email": email,
-        "password_hash": hash_password(password),
-        "created_at": now_text(),
-        "expire_date": expire_date,
-        "permanent": bool(permanent),
-        "role": role if role in {"member", "vip", "admin"} else "member",
-        "status": "active",
+/* card */
+
+.dark-card {
+    background:
+        linear-gradient(145deg,#0f1721,#090f17);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 14px;
+    padding: 15px;
+    margin-bottom: 14px;
+}
+
+.card-title {
+    font-size: 14px;
+    font-weight: 800;
+    margin-bottom: 12px;
+}
+
+.number-badge {
+    width: 25px;
+    height: 25px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: #ff6a00;
+    color: white;
+    font-size: 12px;
+    font-weight: 800;
+    margin-right: 7px;
+}
+
+/* buttons */
+
+.stButton > button {
+    border-radius: 8px !important;
+    border: 1px solid rgba(255,255,255,0.12) !important;
+    background: #111a24 !important;
+    color: #fff !important;
+    font-weight: 700 !important;
+    min-height: 40px;
+}
+
+.stButton > button:hover {
+    border-color: #ff6a00 !important;
+    color: #ff8b42 !important;
+    box-shadow: 0 0 18px rgba(255,90,0,0.15);
+}
+
+.orange-button .stButton > button {
+    background: linear-gradient(135deg,#ff7200,#ff4500) !important;
+    border: none !important;
+}
+
+/* input */
+
+.stTextInput input,
+.stNumberInput input,
+.stTextArea textarea,
+.stSelectbox div[data-baseweb="select"] > div {
+    background: #0b121b !important;
+    border: 1px solid rgba(255,255,255,0.09) !important;
+    color: #fff !important;
+    border-radius: 8px !important;
+}
+
+/* tabs */
+
+.stTabs [data-baseweb="tab-list"] {
+    gap: 4px;
+    background: #080e16;
+    padding: 5px;
+    border-radius: 10px;
+}
+
+.stTabs [data-baseweb="tab"] {
+    color: #8d98a5;
+    border-radius: 7px;
+}
+
+.stTabs [aria-selected="true"] {
+    background: rgba(255,90,0,0.15) !important;
+    color: #ff812e !important;
+}
+
+/* upload */
+
+[data-testid="stFileUploader"] {
+    background: #0b121b;
+    border: 1px dashed rgba(255,255,255,0.15);
+    border-radius: 10px;
+}
+
+/* progress */
+
+.progress-bg {
+    height: 7px;
+    background: #18212c;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg,#ff7200,#ff3c00);
+    border-radius: 10px;
+}
+
+/* checklist */
+
+.check-item {
+    padding: 7px 0;
+    color: #dce2e8;
+    font-size: 12px;
+}
+
+.check {
+    color: #49d98c;
+    margin-right: 6px;
+}
+
+/* right stats */
+
+.stat-row {
+    display: flex;
+    justify-content: space-between;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    padding: 11px 2px;
+}
+
+.stat-name {
+    color: #8793a0;
+    font-size: 11px;
+}
+
+.stat-value {
+    color: white;
+    font-size: 14px;
+    font-weight: 800;
+}
+
+.stat-up {
+    color: #46d88a;
+    font-size: 10px;
+}
+
+/* preview */
+
+.shopee-preview {
+    background: #fff;
+    color: #222;
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.shopee-preview img {
+    width: 100%;
+    height: 220px;
+    object-fit: cover;
+}
+
+.shopee-body {
+    padding: 12px;
+}
+
+.shopee-title {
+    font-size: 13px;
+    line-height: 1.5;
+    font-weight: 600;
+}
+
+.shopee-price {
+    color: #ee4d2d;
+    font-size: 24px;
+    font-weight: 800;
+    margin-top: 8px;
+}
+
+.shopee-info {
+    color: #777;
+    font-size: 10px;
+    margin-top: 4px;
+}
+
+/* footer quick */
+
+.quick-card {
+    background: #0c141e;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 11px;
+    padding: 13px;
+    text-align: center;
+    min-height: 75px;
+}
+
+.quick-icon {
+    font-size: 24px;
+}
+
+.quick-title {
+    font-size: 11px;
+    font-weight: 700;
+    margin-top: 4px;
+}
+
+/* mobile */
+
+@media (max-width: 900px) {
+    .top-title {
+        font-size: 18px;
     }
 
-    save_members(members)
-    return True, "會員建立成功。"
+    .workflow-item {
+        min-width: 125px;
+    }
+}
 
-
-def authenticate(username, password):
-    username = str(username or "").strip()
-    members = load_members()
-    member = members.get(username)
-
-    if not member:
-        return None, "帳號不存在。"
-    if member.get("status", "active") != "active":
-        return None, "此帳號目前已停用。"
-
-    password_hash = hash_password(password)
-    if not secrets.compare_digest(
-        str(member.get("password_hash", "")),
-        password_hash,
-    ):
-        return None, "密碼錯誤。"
-
-    status, valid = member_expiration(member)
-    if not valid:
-        return None, f"會員無法使用：{status}"
-
-    return member, ""
-
-
-def login_user(username, password):
-    member, message = authenticate(username, password)
-    if not member:
-        return False, message
-
-    st.session_state.logged_in = True
-    st.session_state.username = member.get("username", "")
-    st.session_state.name = member.get("name", member.get("username", ""))
-    st.session_state.role = member.get("role", "member")
-    st.session_state.member = member
-    st.session_state.page = "home"
-    return True, "登入成功。"
-
-
-def logout_user():
-    for key, value in DEFAULT_STATE.items():
-        st.session_state[key] = value
+</style>
+""", unsafe_allow_html=True)
 
 
 # =========================================================
-# 圖片處理
+# SESSION STATE
 # =========================================================
-def prepare_image(uploaded_file):
-    if not uploaded_file:
-        raise ValueError("沒有收到圖片。")
 
-    raw = uploaded_file.getvalue()
-    if len(raw) > MAX_IMAGE_MB * 1024 * 1024:
-        raise ValueError(f"圖片超過 {MAX_IMAGE_MB}MB。")
+if "page" not in st.session_state:
+    st.session_state.page = "商品上架工作台"
 
-    try:
-        image = Image.open(io.BytesIO(raw))
-        image = ImageOps.exif_transpose(image)
+if "product_name" not in st.session_state:
+    st.session_state.product_name = ""
 
-        if image.mode not in ("RGB", "RGBA"):
-            image = image.convert("RGB")
+if "category" not in st.session_state:
+    st.session_state.category = "保養保健"
 
-        image.thumbnail(
-            (MAX_IMAGE_SIZE, MAX_IMAGE_SIZE),
-            Image.Resampling.LANCZOS,
-        )
+if "price" not in st.session_state:
+    st.session_state.price = 499
 
-        output = io.BytesIO()
+if "stock" not in st.session_state:
+    st.session_state.stock = 100
 
-        if image.mode == "RGBA":
-            image.save(output, format="PNG", optimize=True)
-            mime = "image/png"
-        else:
-            image.save(output, format="JPEG", quality=92, optimize=True)
-            mime = "image/jpeg"
+if "generated" not in st.session_state:
+    st.session_state.generated = False
 
-        return output.getvalue(), mime
-    except Exception as exc:
-        raise ValueError(f"圖片處理失敗：{exc}") from exc
+if "uploaded_images" not in st.session_state:
+    st.session_state.uploaded_images = []
+
+if "publish_count" not in st.session_state:
+    st.session_state.publish_count = 0
 
 
 # =========================================================
-# Gemini API
+# SIDEBAR
 # =========================================================
-def get_gemini_client():
-    if not GEMINI_KEY:
-        raise RuntimeError(
-            "尚未設定 GEMINI_KEY。請在 Streamlit Secrets 或環境變數中設定。"
-        )
 
-    try:
-        from google import genai
-        return genai.Client(api_key=GEMINI_KEY)
-    except ImportError as exc:
-        raise RuntimeError(
-            "缺少 google-genai，請在 requirements.txt 加入 google-genai。"
-        ) from exc
-    except Exception as exc:
-        raise RuntimeError(f"Gemini 初始化失敗：{exc}") from exc
+with st.sidebar:
+
+    st.markdown("""
+    <div class="sidebar-logo">
+        <span class="logo-icon">S</span>
+        <span class="logo-title">AI 蝦皮自動化</span>
+        <div class="logo-sub">AI 智能生成・一鍵上架</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("### 主選單")
+
+    menu = [
+        ("🏠", "Dashboard"),
+        ("🛍️", "商品上架工作台"),
+        ("📦", "商品管理"),
+        ("🧾", "訂單管理"),
+        ("📊", "數據分析"),
+        ("🖼️", "AI 素材庫"),
+        ("🕘", "歷史紀錄"),
+        ("🎵", "TikTok 短影音"),
+        ("💰", "蝦皮分潤管理"),
+    ]
+
+    for icon, name in menu:
+        if st.button(
+            f"{icon}  {name}",
+            key=f"menu_{name}",
+            use_container_width=True
+        ):
+            st.session_state.page = name
+            st.rerun()
+
+    st.markdown("---")
+
+    st.markdown("### 系統管理")
+
+    admin_menu = [
+        ("👤", "會員管理"),
+        ("🛡️", "管理員中心"),
+        ("⚙️", "系統設定"),
+        ("🔑", "API 設定"),
+        ("📚", "使用教學"),
+    ]
+
+    for icon, name in admin_menu:
+        if st.button(
+            f"{icon}  {name}",
+            key=f"admin_{name}",
+            use_container_width=True
+        ):
+            st.session_state.page = name
+            st.rerun()
+
+    st.markdown("---")
+
+    st.markdown("""
+    <div class="dark-card">
+        <div style="font-size:14px;font-weight:800;color:#ff8a3d;">
+            👑 PRO 會員專屬
+        </div>
+
+        <div class="check-item">
+            <span class="check">✓</span> 無限次 AI 生成
+        </div>
+
+        <div class="check-item">
+            <span class="check">✓</span> 一鍵上架蝦皮
+        </div>
+
+        <div class="check-item">
+            <span class="check">✓</span> TikTok 短影音
+        </div>
+
+        <div class="check-item">
+            <span class="check">✓</span> 即夢 AI 2.5
+        </div>
+
+        <div class="check-item">
+            <span class="check">✓</span> 雲端素材庫
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.button("🚀 升級 PRO", use_container_width=True):
+        st.toast("PRO 功能區已開啟")
 
 
-def ask_gemini(prompt, image_bytes=None, mime_type="image/jpeg"):
-    client = get_gemini_client()
+# =========================================================
+# TOP HEADER
+# =========================================================
 
-    try:
-        from google.genai import types
+st.markdown("""
+<div class="top-header">
+    <div class="top-title">
+        🛍️ AI 蝦皮自動化
+        <span class="pro-badge">2.5 PRO</span>
+    </div>
+    <div class="top-sub">
+        AI 智能生成・一鍵上架・提升銷售
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-        contents = []
 
-        if image_bytes:
-            contents.append(
-                types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type=mime_type,
-                )
-            )
+# =========================================================
+# TOP METRICS
+# =========================================================
 
-        contents.append(prompt)
+m1, m2, m3, m4 = st.columns(4)
 
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
-        )
+with m1:
+    st.markdown("""
+    <div class="metric-card">
+        <div class="metric-title">今日 AI 使用額度</div>
+        <div class="metric-value metric-orange">86 / 200 次</div>
+        <div class="progress-bg">
+            <div class="progress-fill" style="width:43%"></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-        text = getattr(response, "text", None)
+with m2:
+    st.markdown("""
+    <div class="metric-card">
+        <div class="metric-title">AI 剩餘額度</div>
+        <div class="metric-value metric-green">1,248 Tokens</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with m3:
+    st.markdown("""(response, "text", None)
         if not text:
             raise RuntimeError("Gemini 沒有返回文字內容。")
 
